@@ -1,0 +1,27 @@
+[package]
+name = "dream-engine-mcp"
+description = "MCP (Model Context Protocol) client implementation for dream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dream-engine-types.workspace    = true
+dream-engine-protocol.workspace = true
+dream-engine-tools.workspace    = true
+dream-engine-config.workspace   = true
+
+tracing.workspace     = true
+tokio.workspace       = true
+serde.workspace       = true
+serde_json.workspace  = true
+async-trait.workspace = true
+thiserror.workspace   = true
+anyhow.workspace      = true
+reqwest.workspace     = true
+futures.workspace     = true
+workspace-hack.workspace = true
+
+[features]
+test-utils = []

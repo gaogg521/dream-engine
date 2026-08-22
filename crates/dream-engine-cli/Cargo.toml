@@ -1,0 +1,36 @@
+[package]
+name = "dream-engine-cli"
+description = "CLI binary for dream — a multi-provider AI agent with tool orchestration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["ai", "agent", "cli", "llm", "anthropic"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "dream"
+path = "src/main.rs"
+
+[dependencies]
+dream-engine-agent.workspace    = true
+dream-engine-compact.workspace  = true
+dream-engine-config.workspace   = true
+dream-engine-memory.workspace   = true
+dream-engine-providers.workspace = true
+dream-engine-tools.workspace    = true
+dream-engine-mcp.workspace      = true
+dream-engine-protocol.workspace = true
+dream-engine-skills.workspace   = true
+dream-engine-types.workspace    = true
+dream-engine-tui.workspace      = true
+
+tokio.workspace              = true
+anyhow.workspace             = true
+clap.workspace               = true
+tracing.workspace            = true
+tracing-subscriber.workspace = true
+workspace-hack.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
