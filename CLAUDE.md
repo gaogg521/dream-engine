@@ -1,28 +1,41 @@
 @AGENTS.md
 
-## ⚠️ 这是 fork,不是上游(新 AI 首读)
+## 项目定位
 
-> **本仓 = fork，只单向同步上游 → fork，永不反向提 PR。** 三仓对上游的映射、版本对照、当前同步状态、同步套路与不变量见：[`../1oneUI/docs/guides/upstream-sync-reference.zh-CN.md`](../1oneUI/docs/guides/upstream-sync-reference.zh-CN.md)
+**dream-engine** 是 **One Work** 平台的 Agent 引擎（Rust CLI/TUI），一个连接 LLM API、自主调用本地工具（文件读写/Shell/搜索等）完成任务的命令行 Agent。本项目最初基于开源项目 aionrs 二次开发，**现已完全独立成自有平台，不再跟随或合并上游**，技术前缀统一为小写 `dream`，二进制名 `dream`。
 
-**master 上的 13 个 fork 专属补丁(上游没有,必保留)**:
-- `3f7b9b5` 流式 tool_call 参数占位空对象空参 bug 修复。
-- `81a1d06` thinking 阶梯基础设施(只在显式请求声明 thinking + 多级重试 level1/2)。
-- `ea45450` **文本化工具历史回放(命脉)** = 兜 litellm-internal 网关无状态拒绝一切 tool_calls 历史(level3);详见 1oneUI 的 [`session-2026-07-10-thinking-param-and-rename.zh-CN.md`](../1oneUI/docs/guides/session-2026-07-10-thinking-param-and-rename.zh-CN.md)。
-- `1ffc171` 测试修复(engine_test 补 `..Default::default()`)。
-- `8de0bf5` **deferred 工具 schema 命中即提升(命脉)** = 兜 GLM 等受约束解码渠道对 stub schema 只能生成 `{}` 空参的死循环(ToolSearch 命中/空参失败均提升为全量申报);详见 1oneUI 的 [`session-2026-07-13-deferred-schema-and-assistant-skills.zh-CN.md`](../1oneUI/docs/guides/session-2026-07-13-deferred-schema-and-assistant-skills.zh-CN.md)。
-- `92d9242` **GLM 盲搜纠偏(命脉,与 8de0bf5 同源)** = 系统提示 + ToolSearch 未命中消息把 GLM 从「把延迟工具引导过度泛化、盲搜核心工具/技能」拉回直接调用 Skill/直连工具;同上文档。
-- `9fa951e` **输出截断改为有界续写(2026-07-20)** = 撞 provider 输出上限时,原逻辑只补救一轮,真正长内容必然再撞上限直接放弃;改成最多 12 轮有界续写逐段拼接;截断落在流式 tool_call 中途时不再误判成正常工具轮;详见 1oneUI 的 [`session-2026-07-20-truncation-fix-and-upstream-resync.zh-CN.md`](../1oneUI/docs/guides/session-2026-07-20-truncation-fix-and-upstream-resync.zh-CN.md)。
-- `33c2bd2` **工具调用被截断后可恢复,不再静默丢弃(2026-07-21)** = 承接 `9fa951e` 留下的遗留项:①`openai_defaults()` 补 `default_max_tokens: Some(32_000)`,此前 OpenAI 兼容协议这条路径从不设默认值,请求里整个省略 `max_tokens` 字段,网关自己的默认上限(实测 4096)接管;②`dream-engine-providers::openai.rs` 的 `finish_reason=="length"` 分支此前放任半截工具调用被丢弃,现在 drain 出来发新事件 `LlmEvent::ToolCallTruncated`,一路传到 `dream-engine-agent::engine.rs::run_inner`——检测到工具调用被截断时不再走 `continue_truncated`(禁用工具续写纯文本导致"看着写完了实际没写"),而是可见提示+保留工具重试;⚠️**验证中额外发现一个未修的新坑**:kimi-k3 等慢速重推理模型的超长单次请求现在有机会拖到 10 分钟量级,撞上网关自己的连接超时(EOF 断连,不是干净的 `finish_reason:length`),同样静默失败且无任何可见报错——本轮判定为独立问题,留到下一轮;详见 [`session-2026-07-21-truncated-tool-call-recovery.zh-CN.md`](../1oneUI/docs/guides/session-2026-07-21-truncated-tool-call-recovery.zh-CN.md)。
-- `45cce3a` **OpenAI SSE 流 EOF 未见 DONE 时不再静默报成功(2026-07-21)** = 承接上一条留下的坑:`stream_process.rs::process_openai_sse_stream` 此前无论有没有见到 `[DONE]` 终止帧,循环自然结束就一律返回 `StreamOutcome::Ok`;`finish_reason` 到达时暂存进 `state.pending_done`,但 `OpenAiParser::finish()` 是空实现从不 flush 它,于是网关中途断连(EOF,不走 `[DONE]`)时这条 Done 事件连同 `finish_reason` 直接被吞掉,agent 侧收不到任何事件、以 `status:finished` 静默收场。改法是照抄同文件里姊妹函数 `process_openai_responses_sse_stream` 已有的正确写法:EOF 未见终止帧时按 `emitted_content` 返回 `FailedPartial`(已出内容→`stream_runner` 转成可见 `LlmEvent::Error`)或 `FailedEmpty`(全空→走既有重试退避逻辑自动重发)。**特意没加** `reqwest::Client` 层的连接/读超时(transport.rs 两处 `reqwest::Client::new()` 确认无超时)——这条路径要支持合法的 10+ 分钟长生成,笼统的总请求超时会把真实长流提前腰斩,风险大于收益;现有修复已经覆盖用户可感知的症状(可见报错 / 空流重试),留给未来如果需要更细粒度的 idle 超时再单独评估。**✅ 已真机验证**(1oneCore 重编内嵌 + CDP 直连渲染进程发真实 kimi-k3 请求,9 分 55 秒后真实复现 `termination:"eof"`/`done_seen:false`,UI 确认弹出可见错误卡片而非静默 `finished`,详见 1oneUI 的 [`session-2026-07-21-truncated-tool-call-recovery.zh-CN.md`](../1oneUI/docs/guides/session-2026-07-21-truncated-tool-call-recovery.zh-CN.md) §2)。
-- `34f827b` **Anthropic 原生协议 SSE 流同款 EOF 修复(2026-07-21)** = `33c2bd2` 当时明确留下的"范围外"缺口,本轮补上:`process_anthropic_sse_stream`(`AnthropicSseBlock` 解码器,同时覆盖 Anthropic 直连和 Vertex 两条 transport)同样无论有没有见到终止事件 `message_stop`,循环自然结束就一律返回 `Ok`;改法与 `45cce3a` 同源,新增 `message_stop_seen` 标志位,未见到时按 `emitted_content` 返回 `FailedPartial`/`FailedEmpty`。**注意这不是同一个坑的完整闭环**:Anthropic 协议在 `content_block_stop` 处理里,截断的 `tool_use` 半截 JSON 解析失败时会直接坍缩成 `{}` 当正常 `ToolUse` 事件发出(`anthropic_shared.rs` `content_block_stop` 分支),不是像 OpenAI 那样直接丢弃——所以截断的工具调用本身已经会在下游工具参数校验时暴露成可见错误,不是完全静默;`33c2bd2` 那种"专门识别截断+保留工具重试"的机制在这条协议路径上还没做,这次只补了"连接中途断连、没走到 message_stop"这一半。**⚠️ 另一半已由 `d309fb5` 补全,见下条。**
-- `d309fb5` **Anthropic `content_block_stop` 坍缩成 `{}` 的截断深层修复(2026-07-21)** = 补全 `34f827b` 明确留下的另一半:Anthropic 协议里 `tool_use` 块的 `input_json_delta` 被输出上限截断时,`content_block_stop` 此前把半截 JSON `unwrap_or({})` 坍缩成空参当正常 `ToolUse` 发出,于是工具(如 `Write`)拿着 `{}` 空参真的执行、参数校验失败,而不是重试。改法:①`content_block_stop` 里区分「合法空参调用」(累积为空→`{}`)与「被截断」(非空但解析失败→发 `ToolCallTruncated`)——完整 tool_use 块的增量 JSON 拼起来一定合法,非空却解析不了只可能是中途截断;②防御性地在 `message_delta` 收到 `stop_reason:max_tokens` 且 tool_use 块仍未闭合(`content_block_stop` 根本没来)时,在 `Done` 前补发 `ToolCallTruncated`,避免整条调用被静默丢弃。下游(`ToolCallTruncated`→`consume_stream`→`truncated_tool_calls`→`recover_truncated_tool_call`)是协议无关的、`33c2bd2` 时就已就位,所以引擎的「可见提示+保留工具重试」现在对 Anthropic/Vertex 也生效。测试:3 个 parse 级用例 + 1 个走真实 `/v1/messages` HTTP+SSE 栈的 wiremock e2e(断言截断的 Write 从不落盘、重试轮带 `tools`)。**至此 Anthropic 原生协议的两半截断缺口(EOF 断连 + `{}` 坍缩)全部闭合。**(顺带 `b3146a5` 把 `MaxTokens` finalization 文案从"去模型设置里调高 max output tokens"这条指向已删 UI 的误导提示改成 host-agnostic 事实陈述,属同族小改,不单列。)
-- `ab7aae0` **ReadImage 委托调用的 token 用量上报给宿主(2026-08-18)** = `LlmEvent::Done { .. } => break` 把委托视觉模型带回来的 usage 直接丢掉，宿主(Dream UI)的企业成本上限与用量看板因此完全看不见这笔真实计费的调用。新增 `dream-engine-types::usage::DelegateUsageSink`（**必须放 dream-engine-types**：dream-engine-tools 需要它，而 dream-engine-tools 不能依赖 dream-engine-agent，会成环）+ `OutputSink::emit_delegate_usage`（**默认 no-op**，terminal/null/protocol 三个 sink 零改动，与上游同步冲突面最小）+ bootstrap 里的 bridge struct。⚠️ **上报的是委托模型名不是会话模型名**——宿主费率表按模型名匹配，记会话模型既是错误归因、费率也算错。顺带新增 `ReadImageTool::with_unavailable_reason`，让宿主替换"没有视觉模型"那句补救建议（宿主可能知道更具体的原因，例如公司模型策略把候选全拦了，此时"去设置里加一个视觉模型"既是错的也无法执行）；**只替换补救那一句**，"不许猜、不许编"在所有路径保留。下游 1oneCore 侧的 allowlist 闸门与账本落地详见 1oneUI 的 [`session-2026-08-18-vision-delegate-governance.zh-CN.md`](../1oneUI/docs/guides/session-2026-08-18-vision-delegate-governance.zh-CN.md)。
-- `1b82f0a` **工具报做不到时先真试一次别的办法,再回报不可能(2026-08-18)** = 纯文本模型撞上 `ReadImage` 的「没有配置视觉模型」后,把这个局限原样转达给用户就停了——尽管它手里有 `ExecCommand`,而且一旦被明确要求去试,它自己就能写出一个可用的 PowerShell OCR 脚本。**没有明确鼓励时,模型的默认行为是回报失败而不是探索。** `context.rs::tool_usage_guidance` 的两条路径各加一处:`Unrestricted` 的整段提示,以及受限策略拼装的 `guidance` 末尾(**无条件加**——受限策略同样有工具,一遇到「我不行」就放弃是同一个失败模式)。⚠️ 受限那条**刻意不点名 `ExecCommand`**,该策略未必授权它。各配一条测试钉死,不允许退化成 `Unrestricted` 专属。**注意这条与 1oneCore 侧的桥接本地 OCR(`local-ocr-*` Skill)是两件独立的事**:那条链路只走 `manager/acp/` 下的 Claude Code/Codex 桥接,把 Skill 显式写进 prompt,不依赖本条引导;本条管的是 dream 自己的会话。
+## 三仓架构
 
-> **8de0bf5 + 92d9242 是机制级修复,无任何模型名硬判**(符合 No Hardcoded Provider Quirks):修的是延迟工具机制本身对受约束解码模型不友好的缺陷,对所有模型生效,GLM 只是第一个踩崩的。若将来提示级纠偏不够,后备是 `ProviderCompat.eager_tool_schemas`(按 provider 配置关 deferral,仍非按模型名),别退回到 `if model==...` 特判。
+| 仓库 | 角色 | 关键产物 |
+| --- | --- | --- |
+| **[dream-ui](https://github.com/gaogg521/dream-ui)** | Electron 桌面、React UI、WebUI 静态资源 | 安装包 |
+| **[dream-core](https://github.com/gaogg521/dream-core)** | Rust 本地服务 | `dreamcore` 二进制，通过 `dream-engine-* = { git = "...", branch = "main" }` 直接依赖本仓库 `main` 分支 |
+| **dream-engine**（本仓库） | Agent 引擎、CLI/TUI、Provider、工具、MCP 客户端 | `dream` 二进制 |
 
-**关键认知**:上游 PR #203 只改 thinking **声明**(v0.2.2 已含),fork 的 4 级重试阶梯(0原样/1 content-block/2 省略/3 文本化)是**正交的 fork 专属基础设施**,同步上游时必保留。
+改完本仓库 `main` 分支并推送后，dream-core 那边 `cargo build`（或 `cargo update -p dream-engine-*`）即可对齐到最新版本。详见 [README.md](./README.md)（英文技术文档，Quick Start / Architecture / Providers 等）。
 
-**下游依赖**:1oneCore 的 `dream-* = { git="gaogg521/dream", branch="master" }` 直接吃本仓 master。改完 master 推 origin 后,1oneCore `cargo build` 自动对齐。
+## 品牌与技术身份
 
-**三仓上游映射 + 同步套路** 见 [`../1oneUI/docs/guides/upstream-sync-reference.zh-CN.md`](../1oneUI/docs/guides/upstream-sync-reference.zh-CN.md)。
+用户可见产品名是 **One Work**（首字母大写、中间有空格，容易被误传成 "OneWork"/"ONE WORK"，改动前以 dream-ui 的 `BRAND_DISPLAY_NAME` 常量为准），但本仓库是纯技术引擎，几乎不直接面向最终用户展示品牌名。技术前缀统一小写 `dream`：CLI 命令 `dream`、crate 名 `dream-engine-*`。
+
+## 持久化/跨进程取值改名的铁律
+
+本仓库的 `LlmEvent`、`AgentSessionKind`、工具契约等如果被 dream-core 反序列化消费，改动前先确认协议双方是否同步：
+
+- 纯内部实现细节（crate 内部函数名、私有类型）可以直接改。
+- 跨进程/跨 crate 边界的枚举、事件类型改名，若字段值会被持久化（如落盘的 session 状态文件）或被 dream-core 一侧按字符串匹配读取，需要保持向后兼容或与 dream-core 同步更新，否则升级瞬间旧数据/旧调用方会解析失败。
+- 改完只看 `cargo build` 通过不够——协议层的字符串不匹配大多是运行时错误，编译期看不出来。
+
+## 测试
+
+```powershell
+cargo nextest run --workspace   # 推荐，比 cargo test 快很多
+cargo test --workspace
+```
+
+## 关键设计决策（供快速定位历史脉络，非详尽变更记录）
+
+- **多级 thinking 重试阶梯**（原样/content-block/省略/文本化）：应对不同网关对 `thinking` 参数支持程度不一的问题，是本仓库独立于任何上游的基础设施，不依赖模型名硬判断。
+- **有界续写处理输出截断**：Provider 响应因输出上限被截断时，最多 12 轮有界续写逐段拼接，并通过 `LlmEvent::ToolCallTruncated` 让截断的工具调用可被感知和恢复，而不是静默丢弃或误判为正常完成。OpenAI 与 Anthropic 两种协议路径都需要独立处理 EOF 断连（未见终止帧）与半截 JSON 两类截断场景。
+- **视觉委托的用量上报**：`ReadImage` 委托视觉模型读图时的 token 用量通过 `DelegateUsageSink` 上报给宿主（dream-core），费率匹配用委托模型名而非会话模型名，避免宿主端的成本上限/账本出现幽灵调用或错误归因。
+- 改动这些机制级修复时优先看是否已有 `ProviderCompat` 配置项可用，避免退化为 `if model == "..."` 这类按模型名硬编码的特判。
