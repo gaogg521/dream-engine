@@ -4,6 +4,11 @@
 
 **dream-engine** 是 **One Work** 平台的 Agent 引擎（Rust CLI/TUI），一个连接 LLM API、自主调用本地工具（文件读写/Shell/搜索等）完成任务的命令行 Agent。本项目最初基于开源项目 aionrs 二次开发，**现已完全独立成自有平台，不再跟随或合并上游**，技术前缀统一为小写 `dream`，二进制名 `dream`。
 
+> **代码溯源**：本仓库 2026-08-23 从旧仓库 `D:\aionui-m0\aionrs-local`（原始最上游是开源项目
+> aionrs）**原样复制的一次性快照**，不含 `.git` 历史。如果在本仓库里发现某个功能/文件
+> "应该存在但找不到"，先去 `D:\aionui-m0\aionrs-local` 翻一下。`D:\aionui-m0` 三仓
+> （`1oneUI`/`1oneCore`/`aionrs-local`）定位是只读归档，不再往里提交新代码。
+
 > 本仓库这一轮品牌独立化没有代码改动（纯 CLAUDE.md 重写）。持久化数据迁移的完整过程
 > （dream-ui/dream-core 两仓的详细记录）见
 > [dream-ui/docs/guides/session-2026-08-23-dream-rebrand-data-migration.zh-CN.md](https://github.com/gaogg521/dream-ui/blob/main/docs/guides/session-2026-08-23-dream-rebrand-data-migration.zh-CN.md)。
