@@ -70,7 +70,7 @@ pub(crate) struct VertexTransportState {
 impl VertexTransportState {
     pub(crate) fn new(project_id: &str, region: &str, auth: GcpAuth, cache_enabled: bool) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::http_client::build(),
             project_id: project_id.to_string(),
             region: region.to_string(),
             auth,

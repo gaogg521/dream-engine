@@ -73,7 +73,7 @@ pub(crate) struct BedrockTransportState {
 impl BedrockTransportState {
     pub(crate) fn new(region: &str, credentials: AwsCredentials, cache_enabled: bool) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::http_client::build(),
             region: region.to_string(),
             credentials,
             cache_enabled,

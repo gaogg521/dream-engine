@@ -637,7 +637,16 @@ mod tests {
         tokio::time::pause();
 
         let provider = ComposedProvider::new(
-            ProviderTransport::OpenAi(OpenAiTransport::new("test-key", &server.uri())),
+            // No read timeout here: this test pauses the tokio clock to skip
+            // retry backoff, and a paused clock auto-advances to the next armed
+            // timer — which would be the client's read timeout, firing in
+            // virtual time before the mock can answer. What is asserted below
+            // is retry semantics, not timeout behaviour.
+            ProviderTransport::OpenAi(OpenAiTransport::with_client(
+                reqwest::Client::new(),
+                "test-key",
+                &server.uri(),
+            )),
             ProviderCompat::openai_defaults(),
         );
         let mut rx = provider
@@ -670,7 +679,16 @@ mod tests {
         tokio::time::pause();
 
         let provider = ComposedProvider::new(
-            ProviderTransport::OpenAi(OpenAiTransport::new("test-key", &server.uri())),
+            // No read timeout here: this test pauses the tokio clock to skip
+            // retry backoff, and a paused clock auto-advances to the next armed
+            // timer — which would be the client's read timeout, firing in
+            // virtual time before the mock can answer. What is asserted below
+            // is retry semantics, not timeout behaviour.
+            ProviderTransport::OpenAi(OpenAiTransport::with_client(
+                reqwest::Client::new(),
+                "test-key",
+                &server.uri(),
+            )),
             ProviderCompat::openai_defaults(),
         );
 

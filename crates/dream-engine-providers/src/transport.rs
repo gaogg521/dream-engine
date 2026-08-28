@@ -71,8 +71,19 @@ pub(crate) struct ProjectedHttpRequest {
 
 impl OpenAiTransport {
     pub(crate) fn new(api_key: &str, base_url: &str) -> Self {
+        Self::with_client(crate::http_client::build(), api_key, base_url)
+    }
+
+    /// Same, with the HTTP client supplied.
+    ///
+    /// Exists for tests that pause the tokio clock to skip retry backoff:
+    /// under a paused clock tokio auto-advances to the next armed timer, so
+    /// the client's read timeout fires in virtual time before a mock server
+    /// can answer. Those tests assert retry semantics, not timeouts, and pass
+    /// a client without them.
+    pub(crate) fn with_client(client: reqwest::Client, api_key: &str, base_url: &str) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client,
             api_key: api_key.to_string(),
             base_url: normalize_openai_base_url(base_url),
         }
@@ -108,7 +119,7 @@ impl OpenAiTransport {
 impl AnthropicTransport {
     pub(crate) fn new(api_key: &str, base_url: &str, cache_enabled: bool) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::http_client::build(),
             api_key: api_key.to_string(),
             base_url: base_url.to_string(),
             cache_enabled,

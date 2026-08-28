@@ -3,9 +3,9 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dream_engine_types::message::{ContentBlock, ImageUrl, Message, Role};
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD;
+    use dream_engine_types::message::{ContentBlock, ImageUrl, Message, Role};
 
     fn no_compat() -> ProviderCompat {
         ProviderCompat::default()

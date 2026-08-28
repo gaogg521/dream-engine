@@ -4,6 +4,7 @@ pub mod bedrock;
 pub(crate) mod composed;
 pub mod error;
 pub(crate) mod framing;
+pub(crate) mod http_client;
 pub mod openai;
 pub(crate) mod openai_messages;
 pub(crate) mod openai_responses;
