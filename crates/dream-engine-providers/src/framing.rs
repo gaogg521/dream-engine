@@ -152,6 +152,37 @@ impl SseBlockFramer {
     }
 }
 
+/// Framer for newline-delimited JSON streams (Ollama `/api/chat`): every
+/// non-empty line is one complete JSON object; there is no sentinel — the
+/// terminal frame carries `"done": true`.
+#[derive(Default)]
+pub(crate) struct NdjsonFramer {
+    buffer: String,
+}
+
+impl NdjsonFramer {
+    pub(crate) fn push_text(&mut self, text: &str) -> Vec<String> {
+        self.buffer.push_str(text);
+
+        let mut lines = Vec::new();
+        while let Some(line_end) = self.buffer.find('\n') {
+            let line = self.buffer.drain(..=line_end).collect::<String>();
+            let line = line.trim();
+            if !line.is_empty() {
+                lines.push(line.to_string());
+            }
+        }
+        lines
+    }
+
+    /// Return a trailing unterminated line at the true end of the stream.
+    pub(crate) fn flush(&mut self) -> Option<String> {
+        let line = self.buffer.trim().to_string();
+        self.buffer.clear();
+        (!line.is_empty()).then_some(line)
+    }
+}
+
 #[cfg(test)]
 #[path = "framing_test.rs"]
 mod framing_test;

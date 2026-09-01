@@ -20,6 +20,7 @@ use dream_engine_types::llm::{LlmEvent, LlmRequest};
 use crate::composed::ComposedProvider;
 use crate::projector::{ResolvedToolWireShape, WireParams, WireProvider, classify_tools_wire_shape_mismatch};
 use crate::transport::{BedrockTransport, ProjectedHttpRequest, ProviderTransport};
+use crate::error::looks_like_context_overflow;
 use crate::{LlmProvider, ProviderError};
 use dream_engine_config::compat::ProviderCompat;
 
@@ -274,6 +275,9 @@ impl BedrockTransportState {
                     status: status.as_u16(),
                     message,
                 });
+            }
+            if status.is_client_error() && looks_like_context_overflow(&body_text) {
+                return Err(ProviderError::PromptTooLong(body_text));
             }
             let message = format_bedrock_error(status.as_u16(), &body_text);
             return Err(ProviderError::Api {

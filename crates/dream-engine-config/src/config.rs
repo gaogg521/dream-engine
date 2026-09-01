@@ -334,6 +334,7 @@ pub enum ProviderType {
     OpenAI,
     Bedrock,
     Vertex,
+    Ollama,
 }
 
 #[derive(Debug, Clone)]
@@ -408,6 +409,7 @@ impl Config {
                 ProviderType::OpenAI => "gpt-4o".into(),
                 ProviderType::Bedrock => "anthropic.claude-sonnet-4-20250514-v1:0".into(),
                 ProviderType::Vertex => "claude-sonnet-4@20250514".into(),
+                ProviderType::Ollama => "qwen3:8b".into(),
             });
 
         let max_tokens = cli.max_tokens.or(merged.default.max_tokens);
@@ -499,6 +501,7 @@ fn default_base_url(provider: ProviderType) -> String {
     match provider {
         ProviderType::Anthropic => "https://api.anthropic.com".into(),
         ProviderType::OpenAI => "https://api.openai.com/v1".into(),
+        ProviderType::Ollama => "http://localhost:11434".into(),
         // Bedrock/Vertex URLs are constructed from region/project, not base_url
         ProviderType::Bedrock | ProviderType::Vertex => String::new(),
     }
@@ -511,6 +514,7 @@ fn compat_defaults_for(provider: ProviderType, base_url: &str) -> ProviderCompat
         ProviderType::OpenAI => ProviderCompat::openai_defaults(),
         ProviderType::Bedrock => ProviderCompat::bedrock_defaults(),
         ProviderType::Vertex => ProviderCompat::anthropic_defaults(),
+        ProviderType::Ollama => ProviderCompat::ollama_defaults(),
     }
 }
 
@@ -619,6 +623,7 @@ fn parse_builtin_provider(s: &str) -> Option<ProviderType> {
         "openai" => Some(ProviderType::OpenAI),
         "bedrock" => Some(ProviderType::Bedrock),
         "vertex" => Some(ProviderType::Vertex),
+        "ollama" => Some(ProviderType::Ollama),
         _ => None,
     }
 }
@@ -653,7 +658,7 @@ fn resolve_provider_alias(
 
     let alias_config = providers.get(requested).cloned().ok_or_else(|| {
         anyhow::anyhow!(
-            "Unknown provider: '{}'. Expected a built-in provider (anthropic, openai, bedrock, vertex) \
+            "Unknown provider: '{}'. Expected a built-in provider (anthropic, openai, bedrock, vertex, ollama) \
              or a custom alias defined in [providers.{}].",
             requested,
             requested
@@ -663,7 +668,7 @@ fn resolve_provider_alias(
     let underlying = alias_config.provider.clone().ok_or_else(|| {
         anyhow::anyhow!(
             "Provider alias '{}' requires a 'provider' field in [providers.{}] \
-             that maps to a built-in type (anthropic, openai, bedrock, vertex).",
+             that maps to a built-in type (anthropic, openai, bedrock, vertex, ollama).",
             requested,
             requested
         )
@@ -672,7 +677,7 @@ fn resolve_provider_alias(
     let provider_type = parse_builtin_provider(&underlying).ok_or_else(|| {
         anyhow::anyhow!(
             "Provider alias '{}' maps to '{}', which is not a built-in provider. \
-             Use one of: anthropic, openai, bedrock, vertex.",
+             Use one of: anthropic, openai, bedrock, vertex, ollama.",
             requested,
             underlying
         )
@@ -715,6 +720,10 @@ fn resolve_api_key(cli_key: Option<&str>, config_key: Option<&str>, provider: Pr
         // Bedrock uses AWS credentials, Vertex uses GCP credentials
         // They don't need a traditional API key
         ProviderType::Bedrock | ProviderType::Vertex => {
+            return Ok(String::new());
+        }
+        // A local Ollama daemon has no auth at all.
+        ProviderType::Ollama => {
             return Ok(String::new());
         }
     }

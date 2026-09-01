@@ -6,7 +6,8 @@ use dream_engine_types::llm::LlmEvent;
 use dream_engine_types::message::{StopReason, TokenUsage};
 
 use crate::error::ProviderError;
-use crate::framing::{FrameKind, SseBlockFramer, SseLineFramer, Utf8StreamDecoder, bedrock_payload_to_frame};
+use crate::framing::{FrameKind, NdjsonFramer, SseBlockFramer, SseLineFramer, Utf8StreamDecoder, bedrock_payload_to_frame};
+use crate::ollama::{OllamaStreamState, parse_ollama_ndjson_line};
 use crate::openai::StreamState as OpenAiStreamState;
 use crate::parser::{AnthropicParser, OpenAiParser, OpenAiResponsesParser, ResponseParser};
 use crate::stream_diagnostics::StreamTermination;
@@ -18,6 +19,7 @@ pub(crate) enum StreamDecoder {
     OpenAiResponsesSse,
     AnthropicSseBlock,
     BedrockAwsEventStream,
+    OllamaNdjson,
 }
 
 impl StreamDecoder {
@@ -27,8 +29,76 @@ impl StreamDecoder {
             Self::OpenAiResponsesSse => process_openai_responses_sse_stream(response, tx).await,
             Self::AnthropicSseBlock => process_anthropic_sse_stream(response, tx).await,
             Self::BedrockAwsEventStream => process_bedrock_aws_event_stream(response, tx).await,
+            Self::OllamaNdjson => process_ollama_ndjson_stream(response, tx).await,
         }
     }
+}
+
+pub(crate) async fn process_ollama_ndjson_stream(
+    response: reqwest::Response,
+    tx: &mpsc::Sender<LlmEvent>,
+) -> StreamOutcome {
+    use futures::StreamExt;
+
+    let mut state = OllamaStreamState::new();
+    let mut framer = NdjsonFramer::default();
+    let mut decoder = Utf8StreamDecoder::default();
+    let mut stream = response.bytes_stream();
+    let mut emitted_answer = false;
+    let mut emitted_done = false;
+
+    macro_rules! handle_line {
+        ($line:expr) => {{
+            let events = parse_ollama_ndjson_line($line, &mut state);
+            for event in events {
+                if matches!(event, LlmEvent::TextDelta(_) | LlmEvent::ToolUse { .. }) {
+                    emitted_answer = true;
+                }
+                if matches!(event, LlmEvent::Done { .. }) {
+                    emitted_done = true;
+                }
+                if tx.send(event).await.is_err() {
+                    return StreamOutcome::Ok;
+                }
+            }
+            if let Some(error) = state.take_stream_error() {
+                return failed_stream_outcome(emitted_answer, error);
+            }
+        }};
+    }
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                let error = ProviderError::Connection(error.to_string());
+                return failed_stream_outcome(emitted_answer, error);
+            }
+        };
+        let text = decoder.push(&chunk);
+        for line in framer.push_text(&text) {
+            handle_line!(&line);
+        }
+    }
+
+    let text = decoder.flush();
+    for line in framer.push_text(&text) {
+        handle_line!(&line);
+    }
+    if let Some(line) = framer.flush() {
+        handle_line!(&line);
+    }
+
+    if emitted_done {
+        return StreamOutcome::Ok;
+    }
+
+    // EOF without the terminal `"done": true` frame: the daemon closed the
+    // connection mid-turn. Fail so the runner retries (empty answer) or
+    // surfaces the truncation (partial answer) instead of reporting an empty
+    // success.
+    let error = ProviderError::Connection("Ollama stream ended without a terminal done frame".to_string());
+    failed_stream_outcome(emitted_answer, error)
 }
 
 pub(crate) async fn process_openai_responses_sse_stream(

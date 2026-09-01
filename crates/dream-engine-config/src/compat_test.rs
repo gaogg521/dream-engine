@@ -89,6 +89,7 @@ max_tokens = 64000
                 api_path: Some("/chat/completions".to_string()),
                 max_request_body_bytes: Some(1_048_576),
                 include_stream_options: Some(false),
+                num_ctx: None,
             },
             messages: MessageCompat {
                 merge_assistant_messages: Some(true),

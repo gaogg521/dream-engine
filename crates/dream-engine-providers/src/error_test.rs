@@ -98,4 +98,35 @@ mod json_error_body_tests {
             ProviderError::RateLimited { body: Some(body), .. } if body == body_text
         ));
     }
+
+    #[test]
+    fn ollama_context_overflow_maps_to_prompt_too_long() {
+        // Real Ollama /v1/chat/completions 400 body when the prompt exceeds num_ctx.
+        let body_text = r#"{"error":"llm: context overflow - prompt exceeds the available context window. Reduce the message length or increase the model's context size."}"#;
+        let body = serde_json::from_str(body_text).expect("test body should be valid JSON");
+        let error =
+            provider_error_from_json_body(&body, body_text.as_bytes()).expect("context overflow should map to an error");
+
+        assert!(matches!(error, ProviderError::PromptTooLong(message) if message.contains("context overflow")));
+    }
+
+    #[test]
+    fn openai_context_length_exceeded_maps_to_prompt_too_long() {
+        let body_text = r#"{"error":{"code":"context_length_exceeded","message":"This model's maximum context length is 8192 tokens. However, you requested 9000 tokens."}}"#;
+        let body = serde_json::from_str(body_text).expect("test body should be valid JSON");
+        let error =
+            provider_error_from_json_body(&body, body_text.as_bytes()).expect("context overflow should map to an error");
+
+        assert!(matches!(error, ProviderError::PromptTooLong(_)));
+    }
+
+    #[test]
+    fn unrelated_4xx_does_not_map_to_prompt_too_long() {
+        let body_text = r#"{"error":{"code":400,"message":"invalid api key"}}"#;
+        let body = serde_json::from_str(body_text).expect("test body should be valid JSON");
+        let error =
+            provider_error_from_json_body(&body, body_text.as_bytes()).expect("status 400 should map to an error");
+
+        assert!(matches!(error, ProviderError::Api { status: 400, .. }));
+    }
 }

@@ -66,6 +66,16 @@ mod tests {
                     ..Default::default()
                 }),
             ),
+            ProviderType::Ollama => (
+                "ollama",
+                "",
+                "http://localhost:11434",
+                "qwen3:8b",
+                false,
+                ProviderCompat::ollama_defaults(),
+                None,
+                None,
+            ),
         };
 
         Config {
@@ -104,6 +114,7 @@ mod tests {
             ProviderType::OpenAI,
             ProviderType::Bedrock,
             ProviderType::Vertex,
+            ProviderType::Ollama,
         ] {
             let config = config_for(provider_type);
             let provider = create_provider(&config);

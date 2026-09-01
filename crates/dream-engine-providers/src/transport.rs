@@ -6,7 +6,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde_json::Value;
 
 use crate::bedrock::BedrockTransportState;
-use crate::error::{ProviderError, provider_error_from_json_body};
+use crate::error::{ProviderError, looks_like_context_overflow, provider_error_from_json_body};
 use crate::openai_responses_projector::OpenAiResponsesProjector;
 use crate::projector::{
     AnthropicWireProjector, OpenAiProjector, ResolvedToolWireShape, WireParams, WireProvider,
@@ -33,6 +33,7 @@ pub(crate) enum ProviderTransport {
     Anthropic(AnthropicTransport),
     Vertex(VertexTransport),
     Bedrock(BedrockTransport),
+    Ollama(OllamaTransport),
 }
 
 #[derive(Clone)]
@@ -58,6 +59,16 @@ pub(crate) struct VertexTransport {
 #[derive(Clone)]
 pub(crate) struct BedrockTransport {
     pub(crate) inner: BedrockTransportState,
+}
+
+#[derive(Clone)]
+pub(crate) struct OllamaTransport {
+    client: reqwest::Client,
+    /// Usually empty — a local Ollama daemon has no auth. Sent as a Bearer
+    /// token when present so the same transport works behind an authenticating
+    /// reverse proxy.
+    api_key: String,
+    base_url: String,
 }
 
 #[derive(Clone, Debug)]
@@ -155,6 +166,43 @@ impl AnthropicTransport {
     }
 }
 
+impl OllamaTransport {
+    pub(crate) fn new(api_key: &str, base_url: &str) -> Self {
+        Self {
+            client: crate::http_client::build(),
+            api_key: api_key.to_string(),
+            base_url: base_url.trim_end_matches('/').to_string(),
+        }
+    }
+
+    pub(crate) fn build_projected_request(
+        &self,
+        body: Value,
+        tool_wire_shape: ResolvedToolWireShape,
+    ) -> Result<ProjectedHttpRequest, ProviderError> {
+        let mut headers = HeaderMap::new();
+        if !self.api_key.is_empty() {
+            let bearer = format!("Bearer {}", self.api_key);
+            let auth = HeaderValue::from_str(&bearer)
+                .map_err(|error| ProviderError::Connection(format!("Invalid authorization header: {error}")))?;
+            headers.insert(AUTHORIZATION, auth);
+        }
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+        Ok(ProjectedHttpRequest {
+            url: format!("{}/api/chat", self.base_url),
+            headers,
+            body,
+            body_bytes: None,
+            tool_wire_shape,
+        })
+    }
+
+    pub(crate) async fn send(&self, request: ProjectedHttpRequest) -> Result<reqwest::Response, ProviderError> {
+        send_projected_json_request(&self.client, request).await
+    }
+}
+
 impl ProviderTransport {
     #[cfg(test)]
     pub(crate) fn wire_protocol(&self, compat: &ProviderCompat) -> WireProtocol {
@@ -164,12 +212,15 @@ impl ProviderTransport {
                 OpenAiApiMode::Responses => WireProtocol::OpenAiResponses,
             },
             Self::Anthropic(_) | Self::Vertex(_) | Self::Bedrock(_) => WireProtocol::AnthropicMessages,
+            // Projection is OpenAI-shaped; only the envelope (URL, options,
+            // NDJSON stream) differs.
+            Self::Ollama(_) => WireProtocol::OpenAiChat,
         }
     }
 
     pub(crate) fn retry_policy(&self) -> RetryPolicy {
         match self {
-            Self::OpenAi(_) => RetryPolicy::new(MAX_STREAM_RETRIES, true, true, true),
+            Self::OpenAi(_) | Self::Ollama(_) => RetryPolicy::new(MAX_STREAM_RETRIES, true, true, true),
             Self::Anthropic(_) | Self::Vertex(_) => RetryPolicy::new(MAX_STREAM_RETRIES, false, true, true),
             Self::Bedrock(_) => RetryPolicy::new(0, false, false, true),
         }
@@ -185,6 +236,7 @@ impl ProviderTransport {
             },
             Self::Anthropic(_) | Self::Vertex(_) => StreamDecoder::AnthropicSseBlock,
             Self::Bedrock(_) => StreamDecoder::BedrockAwsEventStream,
+            Self::Ollama(_) => StreamDecoder::OllamaNdjson,
         }
     }
 
@@ -231,6 +283,12 @@ impl ProviderTransport {
                     .map_err(projection_to_provider_error)?;
                 Ok((body, AnthropicWireProjector::resolved_tool_wire_shape(compat)))
             }
+
+            Self::Ollama(_) => {
+                let body = OpenAiProjector::project(request, compat).map_err(projection_to_provider_error)?;
+                let body = crate::ollama::to_ollama_chat_body(&body, compat.num_ctx());
+                Ok((body, ResolvedToolWireShape::OpenAiFunction))
+            }
         }
     }
 
@@ -250,6 +308,7 @@ impl ProviderTransport {
             Self::Bedrock(transport) => transport
                 .inner
                 .build_projected_request(model, body, compat, tool_wire_shape),
+            Self::Ollama(transport) => transport.build_projected_request(body, tool_wire_shape),
         }
     }
 
@@ -259,6 +318,7 @@ impl ProviderTransport {
             Self::Anthropic(transport) => transport.send(request).await,
             Self::Vertex(transport) => transport.inner.send(request).await,
             Self::Bedrock(transport) => transport.inner.send(request).await,
+            Self::Ollama(transport) => transport.send(request).await,
         }
     }
 }
@@ -408,6 +468,10 @@ fn map_common_status(status: u16, body_text: String, tool_wire_shape: ResolvedTo
 
     if let Some(message) = classify_tools_wire_shape_mismatch(status, &body_text, tool_wire_shape) {
         return ProviderError::Api { status, message };
+    }
+
+    if (400..=499).contains(&status) && looks_like_context_overflow(&body_text) {
+        return ProviderError::PromptTooLong(body_text);
     }
 
     ProviderError::Api {

@@ -26,6 +26,31 @@ impl ProviderError {
     }
 }
 
+/// Upstream error text that really means "the prompt does not fit the model's
+/// context window". Every provider spells it differently — Ollama says
+/// "llm: context overflow - prompt exceeds the available context window",
+/// OpenAI says "maximum context length" / `context_length_exceeded`,
+/// Anthropic says "prompt is too long". Mapping these to `PromptTooLong`
+/// lets downstream classifiers surface context-specific guidance instead of
+/// a generic "provider rejected the request".
+pub(crate) fn looks_like_context_overflow(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    const NEEDLES: &[&str] = &[
+        "context overflow",
+        "prompt too long",
+        "prompt is too long",
+        "maximum context length",
+        "context_length_exceeded",
+        "context length exceeded",
+        "exceeds the available context window",
+        "exceeds the context window",
+        "exceed the context window",
+        "reduce the length of the messages",
+        "reduce your prompt",
+    ];
+    NEEDLES.iter().any(|needle| lower.contains(needle))
+}
+
 /// Map a provider JSON error payload to a `ProviderError`.
 ///
 /// Covers error bodies delivered with a successful HTTP status: whole-body
@@ -61,7 +86,13 @@ pub(crate) fn provider_error_from_json_body(body: &Value, body_bytes: &[u8]) -> 
             retry_after_ms: 5000,
             body: (!body_bytes.is_empty()).then(|| String::from_utf8_lossy(body_bytes).into_owned()),
         }),
+        Some(status) if (400..=499).contains(&status) && looks_like_context_overflow(&message) => {
+            Some(ProviderError::PromptTooLong(message))
+        }
         Some(status) => Some(ProviderError::Api { status, message }),
+        None if error_field.is_some() && looks_like_context_overflow(&message) => {
+            Some(ProviderError::PromptTooLong(message))
+        }
         None if error_field.is_some() => Some(ProviderError::Parse(format!(
             "Provider returned a JSON error response without an HTTP status: {message}"
         ))),

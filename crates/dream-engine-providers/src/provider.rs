@@ -10,6 +10,7 @@ use dream_engine_types::llm::{LlmEvent, LlmRequest};
 use crate::anthropic;
 use crate::bedrock;
 use crate::error::ProviderError;
+use crate::ollama;
 use crate::openai;
 use crate::vertex;
 
@@ -29,6 +30,7 @@ pub fn create_provider(config: &Config) -> Arc<dyn LlmProvider> {
                 .with_cache(config.prompt_caching),
         ),
         ProviderType::OpenAI => Arc::new(openai::OpenAIProvider::new(&config.api_key, &config.base_url, compat)),
+        ProviderType::Ollama => Arc::new(ollama::OllamaProvider::new(&config.api_key, &config.base_url, compat)),
         ProviderType::Bedrock => {
             let bc = config.bedrock.clone().unwrap_or_default();
             let region = bc

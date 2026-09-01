@@ -516,6 +516,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn openai_transport_maps_400_context_overflow_to_prompt_too_long() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(
+                r#"{"error":"llm: context overflow - prompt exceeds the available context window. Reduce the message length or increase the model's context size."}"#,
+            ))
+            .mount(&server)
+            .await;
+        let transport = ProviderTransport::OpenAi(OpenAiTransport::new("test-key", &server.uri()));
+        let compat = ProviderCompat::openai_defaults();
+        let (body, tool_wire_shape) = transport
+            .project_body(&test_request(vec![]), &compat)
+            .expect("request body projection should succeed");
+        let request = transport
+            .build_projected_request("test-model", body, &compat, tool_wire_shape)
+            .expect("projected request should build");
+
+        let error = transport
+            .send(request)
+            .await
+            .expect_err("400 context overflow should map to prompt too long");
+
+        assert!(matches!(
+            error,
+            ProviderError::PromptTooLong(message) if message.contains("context overflow")
+        ));
+    }
+
+    #[tokio::test]
     async fn anthropic_transport_maps_tool_shape_mismatch_to_actionable_api_error() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))

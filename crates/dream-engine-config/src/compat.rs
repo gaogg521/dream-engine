@@ -57,6 +57,14 @@ pub struct TransportCompat {
     /// Whether OpenAI-compatible requests include stream_options.
     /// Default: true for OpenAI-compatible providers.
     pub include_stream_options: Option<bool>,
+
+    /// Ollama `options.num_ctx` — the server-side context window the daemon
+    /// allocates for the model. Only read by the Ollama native transport.
+    /// `None` means "do not send num_ctx": the daemon then keeps its own
+    /// default (4096 unless OLLAMA_CONTEXT_LENGTH says otherwise), which is
+    /// the safe choice because an over-large num_ctx makes Ollama allocate
+    /// KV cache the machine may not have.
+    pub num_ctx: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
@@ -196,6 +204,7 @@ impl TransportCompat {
             api_path: user.api_path.or(defaults.api_path),
             max_request_body_bytes: user.max_request_body_bytes.or(defaults.max_request_body_bytes),
             include_stream_options: user.include_stream_options.or(defaults.include_stream_options),
+            num_ctx: user.num_ctx.or(defaults.num_ctx),
         }
     }
 }
@@ -380,6 +389,21 @@ impl ProviderCompat {
         compat
     }
 
+    /// Defaults for a local Ollama daemon speaking the native `/api/chat`
+    /// protocol. Message/tool projection is OpenAI-shaped (Ollama accepts
+    /// that shape), but there is no `stream_options`, no max-tokens field
+    /// (the native transport maps it to `options.num_predict`), and no
+    /// server-side default output cap — Ollama's own default is unlimited.
+    pub fn ollama_defaults() -> Self {
+        let mut compat = Self::openai_defaults();
+        compat.transport.include_stream_options = Some(false);
+        compat.transport.default_max_tokens = None;
+        compat.transport.api_path = None;
+        compat.reasoning.supports_effort = Some(false);
+        compat.reasoning.effort_levels = None;
+        compat
+    }
+
     /// Merge user config over defaults (user wins on non-None fields)
     pub fn merge(defaults: Self, user: Self) -> Self {
         Self {
@@ -445,6 +469,10 @@ impl ProviderCompat {
 
     pub fn include_stream_options(&self) -> bool {
         self.transport.include_stream_options.unwrap_or(true)
+    }
+
+    pub fn num_ctx(&self) -> Option<u32> {
+        self.transport.num_ctx
     }
 
     pub fn emit_tools(&self) -> bool {
