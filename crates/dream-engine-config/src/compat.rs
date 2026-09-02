@@ -192,6 +192,25 @@ pub struct ReasoningCompat {
     /// false; the OpenAI transport escalates to this as the final
     /// automatic retry (see `composed.rs`).
     pub textualize_tool_replay: Option<bool>,
+
+    /// Model substring patterns for models that reason **by default** — a
+    /// hybrid-reasoning model (GLM-4.5+/Z1, DeepSeek-R, …) fronted by an
+    /// OpenAI-compatible gateway keeps emitting `reasoning_content` even though
+    /// the caller never asked for thinking, and on an open-ended request it can
+    /// spend an entire `max_tokens` budget reasoning without ever answering
+    /// (observed: `glm-flash-latest` on a LiteLLM gateway, ~15k reasoning
+    /// tokens / ~10 min / empty answer).
+    ///
+    /// When the caller did **not** set `request.thinking` and the model matches
+    /// one of these, the OpenAI ChatCompletions projector sends
+    /// `thinking: {"type": "disabled"}` to turn the model's built-in reasoning
+    /// off. Matching mirrors [`Self::default_max_tokens_for_model`]
+    /// (case-insensitive substring, `.`→`-`, first match wins). Empty / `None`
+    /// = never auto-disable; the `thinking.type=enabled` opt-in is unaffected.
+    ///
+    /// Not applied to `openai_official_defaults` — the official o-series/gpt-5
+    /// endpoint rejects an unknown `thinking` argument.
+    pub thinking_off_by_default_models: Option<Vec<String>>,
 }
 
 impl TransportCompat {
@@ -264,6 +283,9 @@ impl ReasoningCompat {
                 .or(defaults.thinking_replay_as_content_block),
             omit_thinking_replay: user.omit_thinking_replay.or(defaults.omit_thinking_replay),
             textualize_tool_replay: user.textualize_tool_replay.or(defaults.textualize_tool_replay),
+            thinking_off_by_default_models: user
+                .thinking_off_by_default_models
+                .or(defaults.thinking_off_by_default_models),
         }
     }
 }
@@ -369,6 +391,23 @@ impl ProviderCompat {
                 supports_thinking: Some(false),
                 supports_effort: Some(true),
                 effort_levels: Some(vec!["low".into(), "medium".into(), "high".into()]),
+                // Hybrid-reasoning families that reason by default. Left off:
+                // `deepseek-v3.1` / Qwen3 (thinking default varies by
+                // deployment) and any bare `glm-4` (matches the non-reasoning
+                // `glm-4-flash`). A user whose gateway serves another
+                // reason-by-default model adds a pattern via provider compat.
+                thinking_off_by_default_models: Some(vec![
+                    "glm-flash-latest".into(),
+                    "glm-latest".into(),
+                    "glm-4-5".into(),
+                    "glm-4-6".into(),
+                    "glm-5".into(),
+                    "glm-6".into(),
+                    "glm-z1".into(),
+                    "deepseek-r1".into(),
+                    "deepseek-reasoner".into(),
+                    "qwq".into(),
+                ]),
                 ..Default::default()
             },
             ..Default::default()
@@ -386,6 +425,9 @@ impl ProviderCompat {
     pub fn openai_official_defaults() -> Self {
         let mut compat = Self::openai_defaults();
         compat.transport.max_tokens_field = Some("max_completion_tokens".into());
+        // The official endpoint rejects an unrecognized `thinking` argument,
+        // and its reasoning models are driven by `reasoning_effort` instead.
+        compat.reasoning.thinking_off_by_default_models = None;
         compat
     }
 
@@ -525,6 +567,22 @@ impl ProviderCompat {
 
     pub fn supports_thinking(&self) -> bool {
         self.reasoning.supports_thinking.unwrap_or(false)
+    }
+
+    /// Whether `model` reasons by default and should be told to stop when the
+    /// caller did not ask for thinking. See
+    /// [`ReasoningCompat::thinking_off_by_default_models`]. Matching mirrors
+    /// [`Self::default_max_tokens_for_model`].
+    pub fn thinking_off_by_default_for_model(&self, model: &str) -> bool {
+        let normalized = normalize_model_pattern(model);
+        self.reasoning
+            .thinking_off_by_default_models
+            .as_deref()
+            .is_some_and(|patterns| {
+                patterns
+                    .iter()
+                    .any(|pattern| normalized.contains(&normalize_model_pattern(pattern)))
+            })
     }
 
     pub fn supports_effort(&self) -> bool {

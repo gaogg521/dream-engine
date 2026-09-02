@@ -117,6 +117,7 @@ max_tokens = 64000
                 thinking_replay_as_content_block: None,
                 omit_thinking_replay: None,
                 textualize_tool_replay: None,
+                thinking_off_by_default_models: None,
             },
             image_input: Some(ImageInputCapability::Supported),
         };
@@ -192,6 +193,7 @@ max_tokens = 64000
                 thinking_replay_as_content_block: None,
                 omit_thinking_replay: None,
                 textualize_tool_replay: None,
+                thinking_off_by_default_models: None,
             },
             image_input: Some(ImageInputCapability::Unsupported),
         };
@@ -224,6 +226,35 @@ max_tokens = 64000
         assert_eq!(merged.reasoning.supports_effort, Some(true));
         assert_eq!(merged.reasoning.effort_levels, Some(vec!["custom".to_string()]));
         assert_eq!(merged.image_input(), ImageInputCapability::Unsupported);
+    }
+
+    #[test]
+    fn test_thinking_off_by_default_for_model() {
+        let compat = ProviderCompat::openai_defaults();
+        // Reason-by-default families (case-insensitive substring, `.`→`-`).
+        assert!(compat.thinking_off_by_default_for_model("glm-flash-latest"));
+        assert!(compat.thinking_off_by_default_for_model("glm-latest"));
+        assert!(compat.thinking_off_by_default_for_model("GLM-4.5-Air"));
+        assert!(compat.thinking_off_by_default_for_model("glm-4.6"));
+        assert!(compat.thinking_off_by_default_for_model("z-ai/glm-5.2:free"));
+        assert!(compat.thinking_off_by_default_for_model("deepseek-r1-0528"));
+        // Not reason-by-default.
+        assert!(!compat.thinking_off_by_default_for_model("glm-4-flash"));
+        assert!(!compat.thinking_off_by_default_for_model("minimax-2-7"));
+        assert!(!compat.thinking_off_by_default_for_model("deepseek-v4-flash"));
+        assert!(!compat.thinking_off_by_default_for_model("gpt-4o"));
+        // Official endpoint never auto-disables.
+        assert!(!ProviderCompat::openai_official_defaults().thinking_off_by_default_for_model("glm-flash-latest"));
+        // A user pattern merges in.
+        let user = ProviderCompat {
+            reasoning: ReasoningCompat {
+                thinking_off_by_default_models: Some(vec!["my-reasoner".into()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let merged = ProviderCompat::merge(ProviderCompat::openai_defaults(), user);
+        assert!(merged.thinking_off_by_default_for_model("my-reasoner-v2"));
     }
 
     #[test]
