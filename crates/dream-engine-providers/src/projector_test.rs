@@ -520,6 +520,51 @@ mod tests {
     }
 
     #[test]
+    fn test_openai_projector_disables_thinking_for_reason_by_default_model() {
+        // No caller opt-in, but the model reasons by default -> send disabled.
+        let mut request = test_request(vec![], None);
+        request.model = "glm-flash-latest".to_string();
+
+        let body = OpenAiProjector::project(&request, &ProviderCompat::openai_defaults())
+            .expect("request body projection should succeed");
+
+        assert_eq!(body["thinking"], json!({ "type": "disabled" }));
+    }
+
+    #[test]
+    fn test_openai_projector_leaves_thinking_unset_for_ordinary_model() {
+        let mut request = test_request(vec![], None);
+        request.model = "minimax-2-7".to_string();
+
+        let body = OpenAiProjector::project(&request, &ProviderCompat::openai_defaults())
+            .expect("request body projection should succeed");
+
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn test_openai_projector_caller_enabled_thinking_overrides_reason_by_default() {
+        let mut request = test_request(vec![], Some(ThinkingConfig::Enabled { budget_tokens: 8_000 }));
+        request.model = "glm-4.6".to_string();
+
+        let body = OpenAiProjector::project(&request, &ProviderCompat::openai_defaults())
+            .expect("request body projection should succeed");
+
+        assert_eq!(body["thinking"], json!({ "type": "enabled" }));
+    }
+
+    #[test]
+    fn test_openai_official_does_not_auto_disable_thinking() {
+        let mut request = test_request(vec![], None);
+        request.model = "glm-flash-latest".to_string();
+
+        let body = OpenAiProjector::project(&request, &ProviderCompat::openai_official_defaults())
+            .expect("request body projection should succeed");
+
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
     fn test_tool_wire_shape_anthropic_default_emits_input_schema() {
         let request = test_request(test_tools(), None);
         let body = AnthropicWireProjector::project(

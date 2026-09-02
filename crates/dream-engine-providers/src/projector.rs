@@ -203,19 +203,27 @@ impl OpenAiProjector {
         }
 
         // Only declare thinking mode when the caller explicitly asked for it
-        // (matches upstream iOfficeAI/dream #203). Auto-forcing it for every
-        // reasoning-capable provider would put conversations into a stricter
-        // thinking-replay contract most OpenAI-compatible gateways cannot
-        // satisfy on follow-up turns.
-        if let Some(thinking) = &request.thinking {
-            match thinking {
-                ThinkingConfig::Enabled { .. } => {
-                    body["thinking"] = json!({ "type": "enabled" });
-                }
-                ThinkingConfig::Disabled => {
-                    body["thinking"] = json!({ "type": "disabled" });
-                }
+        // (matches upstream iOfficeAI/dream #203). Auto-forcing `enabled` for
+        // every reasoning-capable provider would put conversations into a
+        // stricter thinking-replay contract most OpenAI-compatible gateways
+        // cannot satisfy on follow-up turns.
+        //
+        // The one exception is `disabled`: a hybrid-reasoning model
+        // (`compat.thinking_off_by_default_for_model`) keeps reasoning even
+        // though nobody asked, and can burn a whole `max_tokens` budget on it
+        // without answering. Telling it to stop carries none of `enabled`'s
+        // replay contract, so it is safe to send unprompted.
+        match &request.thinking {
+            Some(ThinkingConfig::Enabled { .. }) => {
+                body["thinking"] = json!({ "type": "enabled" });
             }
+            Some(ThinkingConfig::Disabled) => {
+                body["thinking"] = json!({ "type": "disabled" });
+            }
+            None if compat.thinking_off_by_default_for_model(&request.model) => {
+                body["thinking"] = json!({ "type": "disabled" });
+            }
+            None => {}
         }
 
         preflight_projected_body(WireProvider::OpenAi, &body, tool_count, compat)?;
