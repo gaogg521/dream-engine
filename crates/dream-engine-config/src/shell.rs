@@ -156,9 +156,31 @@ pub fn detect_shell_kind(path: impl AsRef<Path>) -> Option<ShellKind> {
     shell_kind_from_alias(stem)
 }
 
+/// Stop Windows from flashing a console window for a child process.
+///
+/// `ExecCommand`, `Grep`'s ripgrep, MCP stdio servers, hooks and skill probes
+/// all spawn short-lived helpers; without `CREATE_NO_WINDOW` each one pops a
+/// `conhost.exe` window on screen. Stdio is still piped normally. No-op off
+/// Windows.
+///
+/// Note: `creation_flags` *replaces* the flag set, so a call site that needs
+/// other flags (e.g. `CREATE_SUSPENDED` for job-object containment) must OR
+/// `CREATE_NO_WINDOW` in itself rather than call this afterwards.
+pub fn suppress_console_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        // windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
 pub fn shell_command_builder(shell: &ResolvedShell, command_str: &str, login: bool) -> Command {
     let mut cmd = Command::new(&shell.path);
     cmd.args(shell.derive_exec_args(command_str, login));
+    suppress_console_window(&mut cmd);
     cmd
 }
 

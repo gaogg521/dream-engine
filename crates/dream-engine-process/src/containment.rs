@@ -31,9 +31,13 @@ fn configure_command(command: &mut Command) {
 
 #[cfg(windows)]
 fn configure_command(command: &mut Command) {
-    use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+    use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
 
-    command.creation_flags(CREATE_SUSPENDED);
+    // CREATE_SUSPENDED: spawn paused so the job object can be attached before
+    // the child runs (see `attach_child`).
+    // CREATE_NO_WINDOW: don't flash a console window for every `ExecCommand`.
+    // `creation_flags` replaces the whole set, so both must be passed here.
+    command.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
 }
 
 #[cfg(not(any(unix, windows)))]

@@ -27,6 +27,7 @@ impl StdioTransport {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
             .envs(env);
+        dream_engine_config::shell::suppress_console_window(&mut cmd);
 
         let mut child = cmd
             .spawn()
