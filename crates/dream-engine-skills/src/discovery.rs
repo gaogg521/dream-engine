@@ -200,13 +200,10 @@ impl RuntimeDiscovery {
 ///
 /// Aligns with TypeScript `isPathGitignored` referenced at L892.
 async fn is_path_gitignored(path: &Path, cwd: &str) -> bool {
-    let result = tokio::process::Command::new("git")
-        .arg("check-ignore")
-        .arg("-q")
-        .arg(path)
-        .current_dir(cwd)
-        .output()
-        .await;
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.arg("check-ignore").arg("-q").arg(path).current_dir(cwd);
+    dream_engine_config::shell::suppress_console_window(&mut cmd);
+    let result = cmd.output().await;
 
     match result {
         Ok(output) => output.status.success(),
