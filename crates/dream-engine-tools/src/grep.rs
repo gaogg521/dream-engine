@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::process::Command;
 
+use dream_engine_config::shell::suppress_console_window;
 use dream_engine_protocol::events::ToolCategory;
 use dream_engine_types::tool::{JsonSchema, ToolResult};
 
@@ -126,6 +127,7 @@ async fn try_ripgrep(
     if case_insensitive {
         cmd.arg("-i");
     }
+    suppress_console_window(&mut cmd);
 
     let output = cmd.output().await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -173,6 +175,7 @@ async fn try_grep(pattern: &str, path: &str, case_insensitive: bool) -> ToolResu
         }
         c
     };
+    suppress_console_window(&mut cmd);
 
     match cmd.output().await {
         Ok(output) => {
