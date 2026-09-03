@@ -886,11 +886,15 @@ mod tests_compact {
         );
     }
 
-    #[test]
-    fn cache_full_miss_is_reported_as_info_not_error() {
+    /// Drive two turns so the second one lands as a full cache miss caused by
+    /// TTL expiry (identical prompt, cache_read drops from >0 to 0).
+    fn run_ttl_expiry_full_miss(cache_diagnostics: bool) -> Arc<RecordingOutput> {
         let output = Arc::new(RecordingOutput::default());
-        let mut engine =
-            make_compact_engine_with_output(CompactConfig::default(), CompactState::new(), vec![], output.clone());
+        let config = CompactConfig {
+            cache_diagnostics,
+            ..CompactConfig::default()
+        };
+        let mut engine = make_compact_engine_with_output(config, CompactState::new(), vec![], output.clone());
 
         engine.cache_detector.record_request("prompt", &[]);
         engine.record_turn_usage(&TokenUsage {
@@ -908,18 +912,40 @@ mod tests_compact {
             cache_read_tokens: 0,
         });
 
+        output
+    }
+
+    #[test]
+    fn cache_full_miss_never_emits_a_terminal_error() {
+        for cache_diagnostics in [false, true] {
+            let output = run_ttl_expiry_full_miss(cache_diagnostics);
+            assert!(
+                output.errors.lock().unwrap().is_empty(),
+                "cache diagnostics must never emit terminal errors (cache_diagnostics={cache_diagnostics})"
+            );
+        }
+    }
+
+    #[test]
+    fn cache_full_miss_stays_out_of_the_transcript_unless_diagnostics_are_on() {
+        // Default: a routine TTL expiry must not surface a scary-looking
+        // "Cache full miss" line to the user mid-session.
+        let quiet = run_ttl_expiry_full_miss(false);
         assert!(
-            output.errors.lock().unwrap().is_empty(),
-            "cache diagnostics should not emit terminal errors"
+            !quiet.infos.lock().unwrap().iter().any(|msg| msg.contains("Cache full miss")),
+            "full cache miss should be silent in the transcript by default"
         );
+
+        // Opt in via cache diagnostics and it comes back, like PartialMiss / Healthy.
+        let verbose = run_ttl_expiry_full_miss(true);
         assert!(
-            output
+            verbose
                 .infos
                 .lock()
                 .unwrap()
                 .iter()
                 .any(|msg| msg == "Cache full miss: TtlExpiry"),
-            "full cache misses should remain visible as diagnostics"
+            "full cache miss should be visible when cache diagnostics are enabled"
         );
     }
 

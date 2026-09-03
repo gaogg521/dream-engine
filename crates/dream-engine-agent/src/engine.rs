@@ -1234,7 +1234,17 @@ impl AgentEngine {
         if let Some(diagnostic) = self.cache_detector.check_response(cache_stats) {
             match &diagnostic {
                 CacheDiagnostic::FullMiss { cause } => {
-                    self.output.emit_info(&format!("Cache full miss: {cause:?}"));
+                    // Prompt-cache health is a developer diagnostic, not something
+                    // the end user asked about — and `TtlExpiry` in particular is
+                    // routine (it just means the conversation sat idle past the
+                    // provider's cache window). Keep it in the logs, but only
+                    // surface it in the transcript when cache diagnostics are on,
+                    // the same as PartialMiss / Healthy below. Left ungated it
+                    // read as an error to users mid-session.
+                    debug!(target: "dream_engine_agent", ?cause, "prompt cache full miss");
+                    if self.compact_config.cache_diagnostics {
+                        self.output.emit_info(&format!("Cache full miss: {cause:?}"));
+                    }
                 }
                 CacheDiagnostic::PartialMiss { hit_rate, cause } => {
                     if self.compact_config.cache_diagnostics {
