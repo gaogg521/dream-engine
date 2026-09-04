@@ -22,6 +22,8 @@ mod tests {
             GcpAuth::ApplicationDefault,
             false,
             ProviderCompat::anthropic_defaults(),
+            None,
+            None,
         )
     }
 
@@ -76,7 +78,14 @@ mod tests {
 
     #[test]
     fn vertex_transport_builds_projected_request_with_vertex_url_and_preserves_body() {
-        let state = VertexTransportState::new("test-project", "us-central1", GcpAuth::ApplicationDefault, false);
+        let state = VertexTransportState::new(
+            "test-project",
+            "us-central1",
+            GcpAuth::ApplicationDefault,
+            false,
+            None,
+            None,
+        );
         let transport = ProviderTransport::Vertex(VertexTransport { inner: state });
         let compat = ProviderCompat::anthropic_defaults();
         let body = json!({
@@ -113,7 +122,14 @@ mod tests {
             .mount(&server)
             .await;
 
-        let state = VertexTransportState::new("test-project", "us-central1", GcpAuth::ApplicationDefault, false);
+        let state = VertexTransportState::new(
+            "test-project",
+            "us-central1",
+            GcpAuth::ApplicationDefault,
+            false,
+            None,
+            None,
+        );
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after unix epoch")
@@ -146,5 +162,80 @@ mod tests {
                     && message.contains("anthropic_input_schema")
                     && message.contains("openai_function")
         ));
+    }
+
+    // --- Endpoint override (enterprise model proxy / gateway) ---
+
+    #[test]
+    fn vertex_build_url_defaults_to_the_google_host() {
+        let state = VertexTransportState::new(
+            "test-project",
+            "us-central1",
+            GcpAuth::ApplicationDefault,
+            false,
+            None,
+            None,
+        );
+        assert_eq!(
+            state.build_url("claude-test-model"),
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/test-project/locations/us-central1/publishers/anthropic/models/claude-test-model:streamRawPredict"
+        );
+    }
+
+    #[test]
+    fn vertex_build_url_honors_a_configured_base_url_and_trims_the_trailing_slash() {
+        let state = VertexTransportState::new(
+            "test-project",
+            "us-central1",
+            GcpAuth::ApplicationDefault,
+            false,
+            Some("https://gateway.internal/vertex/".to_string()),
+            None,
+        );
+        assert_eq!(
+            state.build_url("claude-test-model"),
+            "https://gateway.internal/vertex/v1/projects/test-project/locations/us-central1/publishers/anthropic/models/claude-test-model:streamRawPredict"
+        );
+    }
+
+    /// Proxy mode: the static channel token is presented as `Authorization:
+    /// Bearer` with no GCP token exchange, against the configured base URL.
+    #[tokio::test]
+    async fn vertex_transport_send_uses_the_static_bearer_token_when_configured() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(
+                "/v1/projects/test-project/locations/us-central1/publishers/anthropic/models/claude-test-model:streamRawPredict",
+            ))
+            .and(header("authorization", "Bearer onech-abc"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("event: message_start\n"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let state = VertexTransportState::new(
+            "test-project",
+            "us-central1",
+            GcpAuth::ApplicationDefault,
+            false,
+            Some(format!("{}/", server.uri())),
+            Some("onech-abc".to_string()),
+        );
+        let transport = ProviderTransport::Vertex(VertexTransport { inner: state });
+        let compat = ProviderCompat::anthropic_defaults();
+
+        let request = transport
+            .build_projected_request(
+                "claude-test-model",
+                json!({"messages": []}),
+                &compat,
+                ResolvedToolWireShape::AnthropicInputSchema,
+            )
+            .expect("vertex projected request should build");
+
+        transport
+            .send(request)
+            .await
+            .expect("send with static bearer token should succeed");
     }
 }

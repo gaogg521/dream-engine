@@ -149,7 +149,14 @@ mod tests {
     #[test]
     fn vertex_transport_projects_vertex_anthropic_body_shape() {
         let transport = ProviderTransport::Vertex(VertexTransport {
-            inner: VertexTransportState::new("test-project", "us-central1", GcpAuth::ApplicationDefault, false),
+            inner: VertexTransportState::new(
+                "test-project",
+                "us-central1",
+                GcpAuth::ApplicationDefault,
+                false,
+                None,
+                None,
+            ),
         });
         let request = test_request(vec![test_tool()]);
         let compat = ProviderCompat::anthropic_defaults();
@@ -178,6 +185,8 @@ mod tests {
                     session_token: None,
                 },
                 false,
+                None,
+                None,
             ),
         });
         let request = test_request(vec![test_tool()]);
@@ -611,6 +620,8 @@ mod tests {
                     session_token: None,
                 },
                 false,
+                None,
+                None,
             ),
         });
         let compat = ProviderCompat::bedrock_defaults();
@@ -647,6 +658,8 @@ mod tests {
                     session_token: None,
                 },
                 false,
+                None,
+                None,
             ),
         });
         let request = ProjectedHttpRequest {
@@ -690,6 +703,8 @@ mod tests {
                     session_token: None,
                 },
                 false,
+                None,
+                None,
             ),
         });
         let mut headers = HeaderMap::new();

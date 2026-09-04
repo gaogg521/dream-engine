@@ -7,7 +7,7 @@ use aws_sigv4::http_request::{
     self as sigv4_http, PayloadChecksumKind, SignableBody, SignableRequest, SignatureLocation, SigningSettings,
 };
 use aws_sigv4::sign::v4::SigningParams;
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use std::thread;
 use std::time::SystemTime;
@@ -18,9 +18,9 @@ use dream_engine_config::config::BedrockConfig;
 use dream_engine_types::llm::{LlmEvent, LlmRequest};
 
 use crate::composed::ComposedProvider;
+use crate::error::looks_like_context_overflow;
 use crate::projector::{ResolvedToolWireShape, WireParams, WireProvider, classify_tools_wire_shape_mismatch};
 use crate::transport::{BedrockTransport, ProjectedHttpRequest, ProviderTransport};
-use crate::error::looks_like_context_overflow;
 use crate::{LlmProvider, ProviderError};
 use dream_engine_config::compat::ProviderCompat;
 
@@ -29,8 +29,15 @@ pub struct BedrockProvider {
 }
 
 impl BedrockProvider {
-    pub fn new(region: &str, credentials: AwsCredentials, cache_enabled: bool, compat: ProviderCompat) -> Self {
-        let transport_state = BedrockTransportState::new(region, credentials, cache_enabled);
+    pub fn new(
+        region: &str,
+        credentials: AwsCredentials,
+        cache_enabled: bool,
+        compat: ProviderCompat,
+        base_url: Option<String>,
+        bearer_token: Option<String>,
+    ) -> Self {
+        let transport_state = BedrockTransportState::new(region, credentials, cache_enabled, base_url, bearer_token);
         let transport = ProviderTransport::Bedrock(BedrockTransport {
             inner: transport_state.clone(),
         });
@@ -69,15 +76,28 @@ pub(crate) struct BedrockTransportState {
     region: String,
     credentials: AwsCredentials,
     cache_enabled: bool,
+    /// Endpoint prefix replacing `https://bedrock-runtime.{region}.amazonaws.com`.
+    base_url: Option<String>,
+    /// Static `Authorization: Bearer` credential for proxied/gateway endpoints;
+    /// takes precedence over SigV4 when present (set only together with `base_url`).
+    bearer_token: Option<String>,
 }
 
 impl BedrockTransportState {
-    pub(crate) fn new(region: &str, credentials: AwsCredentials, cache_enabled: bool) -> Self {
+    pub(crate) fn new(
+        region: &str,
+        credentials: AwsCredentials,
+        cache_enabled: bool,
+        base_url: Option<String>,
+        bearer_token: Option<String>,
+    ) -> Self {
         Self {
             client: crate::http_client::build(),
             region: region.to_string(),
             credentials,
             cache_enabled,
+            base_url,
+            bearer_token,
         }
     }
 
@@ -93,10 +113,19 @@ impl BedrockTransportState {
     }
 
     fn build_url(&self, model: &str) -> String {
-        format!(
-            "https://bedrock-runtime.{}.amazonaws.com/model/{}/invoke-with-response-stream",
-            self.region, model
-        )
+        match &self.base_url {
+            // Proxied deployments own the whole prefix; the Bedrock path shape
+            // is what the path-preserving enterprise model proxy forwards verbatim.
+            Some(base) => format!(
+                "{}/model/{}/invoke-with-response-stream",
+                base.trim_end_matches('/'),
+                model
+            ),
+            None => format!(
+                "https://bedrock-runtime.{}.amazonaws.com/model/{}/invoke-with-response-stream",
+                self.region, model
+            ),
+        }
     }
 
     fn resolve_credentials(&self) -> Result<Credentials, ProviderError> {
@@ -230,12 +259,31 @@ impl BedrockTransportState {
     ) -> Result<ProjectedHttpRequest, ProviderError> {
         let body_bytes =
             serde_json::to_vec(&body).map_err(|e| ProviderError::Connection(format!("JSON serialize error: {}", e)))?;
-        let credentials = self.resolve_credentials()?;
         let url = self.build_url(model);
 
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
+        if let Some(token) = &self.bearer_token {
+            // Proxied/gateway endpoint: the proxy strips client authorization
+            // headers and re-presents its own credential, and the caller has no
+            // AWS credentials to sign with — SigV4 would be both useless and
+            // impossible.
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", token))
+                    .map_err(|e| ProviderError::Connection(format!("Header error: {}", e)))?,
+            );
+            return Ok(ProjectedHttpRequest {
+                url,
+                headers,
+                body,
+                body_bytes: Some(body_bytes),
+                tool_wire_shape,
+            });
+        }
+
+        let credentials = self.resolve_credentials()?;
         let signed_headers = self.sign_request("POST", &url, &headers, &body_bytes, &credentials)?;
 
         Ok(ProjectedHttpRequest {
