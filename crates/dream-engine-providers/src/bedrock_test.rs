@@ -19,6 +19,8 @@ mod tests {
             },
             false,
             ProviderCompat::bedrock_defaults(),
+            None,
+            None,
         )
     }
 
@@ -92,5 +94,96 @@ mod tests {
             p.build_request_body(&r)
                 .expect("request body projection should succeed")
         );
+    }
+
+    // --- Endpoint override (enterprise model proxy / gateway) ---
+
+    fn bedrock_state(base_url: Option<String>, bearer_token: Option<String>) -> BedrockTransportState {
+        BedrockTransportState::new(
+            "us-east-1",
+            AwsCredentials::Explicit {
+                access_key_id: "test-key".to_string(),
+                secret_access_key: "test-secret".to_string(),
+                session_token: None,
+            },
+            false,
+            base_url,
+            bearer_token,
+        )
+    }
+
+    #[test]
+    fn build_url_defaults_to_the_regional_aws_host() {
+        let state = bedrock_state(None, None);
+        assert_eq!(
+            state.build_url("anthropic.claude-sonnet-4-20250514-v1:0"),
+            "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-sonnet-4-20250514-v1:0/invoke-with-response-stream"
+        );
+    }
+
+    #[test]
+    fn build_url_honors_a_configured_base_url_and_trims_the_trailing_slash() {
+        let state = bedrock_state(Some("https://gateway.internal/model-api/".to_string()), None);
+        assert_eq!(
+            state.build_url("claude-sonnet-4"),
+            "https://gateway.internal/model-api/model/claude-sonnet-4/invoke-with-response-stream"
+        );
+    }
+
+    /// Proxy mode: the channel token rides as `Authorization: Bearer` and no
+    /// SigV4 headers are produced — the model proxy strips client authorization
+    /// headers anyway, and the caller has no AWS credentials to sign with.
+    #[test]
+    fn a_bearer_token_replaces_sigv4_signing() {
+        let state = bedrock_state(
+            Some("https://gateway.internal/model-api/".to_string()),
+            Some("onech-abc".to_string()),
+        );
+
+        let projected = state
+            .build_projected_request(
+                "claude-sonnet-4",
+                json!({"messages": []}),
+                &ProviderCompat::bedrock_defaults(),
+                ResolvedToolWireShape::AnthropicInputSchema,
+            )
+            .expect("projected request should build");
+
+        assert_eq!(
+            projected.url,
+            "https://gateway.internal/model-api/model/claude-sonnet-4/invoke-with-response-stream"
+        );
+        assert_eq!(
+            projected.headers.get("authorization").and_then(|v| v.to_str().ok()),
+            Some("Bearer onech-abc")
+        );
+        assert!(projected.headers.get("x-amz-date").is_none());
+        assert!(projected.headers.get("x-amz-content-sha256").is_none());
+        assert!(projected.body_bytes.is_some());
+    }
+
+    #[test]
+    fn without_a_bearer_token_the_request_is_sigv4_signed_for_the_target_url() {
+        let state = bedrock_state(None, None);
+
+        let projected = state
+            .build_projected_request(
+                "claude-sonnet-4",
+                json!({"messages": []}),
+                &ProviderCompat::bedrock_defaults(),
+                ResolvedToolWireShape::AnthropicInputSchema,
+            )
+            .expect("projected request should build");
+
+        assert_eq!(
+            projected.url,
+            "https://bedrock-runtime.us-east-1.amazonaws.com/model/claude-sonnet-4/invoke-with-response-stream"
+        );
+        let authorization = projected
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .expect("sigv4 request should carry an authorization header");
+        assert!(authorization.starts_with("AWS4-HMAC-SHA256"), "got: {authorization}");
     }
 }

@@ -15,9 +15,9 @@ use dream_engine_config::config::VertexConfig;
 use dream_engine_types::llm::{LlmEvent, LlmRequest};
 
 use crate::composed::ComposedProvider;
+use crate::error::looks_like_context_overflow;
 use crate::projector::{ResolvedToolWireShape, WireParams, WireProvider, classify_tools_wire_shape_mismatch};
 use crate::transport::{ProjectedHttpRequest, ProviderTransport, VertexTransport};
-use crate::error::looks_like_context_overflow;
 use crate::{LlmProvider, ProviderError};
 use dream_engine_config::compat::ProviderCompat;
 
@@ -27,8 +27,17 @@ pub struct VertexProvider {
 }
 
 impl VertexProvider {
-    pub fn new(project_id: &str, region: &str, auth: GcpAuth, cache_enabled: bool, compat: ProviderCompat) -> Self {
-        let transport_state = VertexTransportState::new(project_id, region, auth, cache_enabled);
+    pub fn new(
+        project_id: &str,
+        region: &str,
+        auth: GcpAuth,
+        cache_enabled: bool,
+        compat: ProviderCompat,
+        base_url: Option<String>,
+        bearer_token: Option<String>,
+    ) -> Self {
+        let transport_state =
+            VertexTransportState::new(project_id, region, auth, cache_enabled, base_url, bearer_token);
         let transport = ProviderTransport::Vertex(VertexTransport {
             inner: transport_state.clone(),
         });
@@ -64,18 +73,32 @@ pub(crate) struct VertexTransportState {
     region: String,
     auth: GcpAuth,
     cache_enabled: bool,
+    /// Endpoint prefix replacing `https://{region}-aiplatform.googleapis.com`.
+    base_url: Option<String>,
+    /// Static `Authorization: Bearer` credential for proxied/gateway endpoints;
+    /// takes precedence over GCP OAuth when present (set only together with `base_url`).
+    bearer_token: Option<String>,
     /// Cached access token
     cached_token: Arc<Mutex<Option<CachedToken>>>,
 }
 
 impl VertexTransportState {
-    pub(crate) fn new(project_id: &str, region: &str, auth: GcpAuth, cache_enabled: bool) -> Self {
+    pub(crate) fn new(
+        project_id: &str,
+        region: &str,
+        auth: GcpAuth,
+        cache_enabled: bool,
+        base_url: Option<String>,
+        bearer_token: Option<String>,
+    ) -> Self {
         Self {
             client: crate::http_client::build(),
             project_id: project_id.to_string(),
             region: region.to_string(),
             auth,
             cache_enabled,
+            base_url,
+            bearer_token,
             cached_token: Arc::new(Mutex::new(None)),
         }
     }
@@ -92,10 +115,21 @@ impl VertexTransportState {
     }
 
     fn build_url(&self, model: &str) -> String {
-        format!(
-            "https://{}-aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/anthropic/models/{}:streamRawPredict",
-            self.region, self.project_id, self.region, model
-        )
+        match &self.base_url {
+            // Proxied deployments own the whole prefix; the Vertex path shape
+            // is what the path-preserving enterprise model proxy forwards verbatim.
+            Some(base) => format!(
+                "{}/v1/projects/{}/locations/{}/publishers/anthropic/models/{}:streamRawPredict",
+                base.trim_end_matches('/'),
+                self.project_id,
+                self.region,
+                model
+            ),
+            None => format!(
+                "https://{}-aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/anthropic/models/{}:streamRawPredict",
+                self.region, self.project_id, self.region, model
+            ),
+        }
     }
 
     pub(crate) fn build_projected_request(
@@ -266,13 +300,19 @@ impl VertexTransportState {
         body: &Value,
         tool_wire_shape: ResolvedToolWireShape,
     ) -> Result<reqwest::Response, ProviderError> {
-        let access_token = self.get_access_token().await?;
+        // Proxied/gateway endpoint: present the static token directly instead
+        // of exchanging GCP credentials — the proxy strips client authorization
+        // headers and re-presents its own credential.
+        let authorization = match &self.bearer_token {
+            Some(token) => format!("Bearer {}", token),
+            None => format!("Bearer {}", self.get_access_token().await?),
+        };
 
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
             AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", access_token))
+            HeaderValue::from_str(&authorization)
                 .map_err(|e| ProviderError::Connection(format!("Header error: {}", e)))?,
         );
 

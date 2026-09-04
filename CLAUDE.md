@@ -47,4 +47,5 @@ cargo test --workspace
 - **多级 thinking 重试阶梯**（原样/content-block/省略/文本化）：应对不同网关对 `thinking` 参数支持程度不一的问题，是本仓库独立于任何上游的基础设施，不依赖模型名硬判断。
 - **有界续写处理输出截断**：Provider 响应因输出上限被截断时，最多 12 轮有界续写逐段拼接，并通过 `LlmEvent::ToolCallTruncated` 让截断的工具调用可被感知和恢复，而不是静默丢弃或误判为正常完成。OpenAI 与 Anthropic 两种协议路径都需要独立处理 EOF 断连（未见终止帧）与半截 JSON 两类截断场景。
 - **视觉委托的用量上报**：`ReadImage` 委托视觉模型读图时的 token 用量通过 `DelegateUsageSink` 上报给宿主（dream-core），费率匹配用委托模型名而非会话模型名，避免宿主端的成本上限/账本出现幽灵调用或错误归因。
+- **Bedrock/Vertex 的可配置 base_url（企业代理通道）**：`build_url` 优先读 `create_provider` 传入的 `Config.base_url`（dream-core 渠道行的 `base_url` 经 `CliArgs` 一路可达），为空才回退硬编码的 AWS/GCP host。`base_url` 与 api key **同时**非空时改走 `Authorization: Bearer`（渠道 token）并跳过 SigV4/GCP OAuth——企业 model proxy 会剥客户端鉴权头、按平台换公司凭证，成员端没有 AWS/GCP 凭证可签；api key 单独存在绝不触发 Bearer 模式，防止 `API_KEY` 环境变量误伤直连部署。
 - 改动这些机制级修复时优先看是否已有 `ProviderCompat` 配置项可用，避免退化为 `if model == "..."` 这类按模型名硬编码的特判。
