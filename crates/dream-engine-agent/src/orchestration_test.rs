@@ -359,8 +359,9 @@ mod tests {
         needle: &'static str,
     }
 
-    impl dream_engine_protocol::ToolPolicyGate for NeedleGate {
-        fn check(&self, tool_name: &str, input: &serde_json::Value) -> Option<String> {
+    #[async_trait::async_trait]
+    impl dream_engine_protocol::ToolCallGuard for NeedleGate {
+        async fn check(&self, tool_name: &str, input: &serde_json::Value) -> Option<String> {
             input
                 .to_string()
                 .contains(self.needle)
@@ -375,7 +376,7 @@ mod tests {
     #[tokio::test]
     async fn a_host_policy_refuses_a_call_that_approval_already_cleared() {
         let mut registry = make_registry_with_deferred();
-        registry.set_policy_gate(std::sync::Arc::new(NeedleGate { needle: "BLOCKME" }));
+        registry.set_call_guard(std::sync::Arc::new(NeedleGate { needle: "BLOCKME" }));
         let call = ContentBlock::ToolUse {
             id: "call_5".into(),
             name: "MockNonDeferred".into(),
@@ -401,7 +402,7 @@ mod tests {
     #[tokio::test]
     async fn a_host_policy_leaves_everything_else_alone() {
         let mut registry = make_registry_with_deferred();
-        registry.set_policy_gate(std::sync::Arc::new(NeedleGate { needle: "BLOCKME" }));
+        registry.set_call_guard(std::sync::Arc::new(NeedleGate { needle: "BLOCKME" }));
         let call = ContentBlock::ToolUse {
             id: "call_6".into(),
             name: "MockNonDeferred".into(),

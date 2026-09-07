@@ -1262,6 +1262,7 @@ dependencies = [
 name = "dream-engine-protocol"
 version = "0.2.11"
 dependencies = [
+ "async-trait",
  "dream-engine-types",
  "rstest",
  "serde",

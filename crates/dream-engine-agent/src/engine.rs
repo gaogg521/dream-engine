@@ -43,7 +43,7 @@ use dream_engine_config::config::Config;
 use dream_engine_config::hooks::HookEngine;
 use dream_engine_protocol::events::ToolCategory;
 use dream_engine_protocol::writer::ProtocolEmitter;
-use dream_engine_protocol::{ToolApprovalManager, ToolPolicyGate};
+use dream_engine_protocol::{ToolApprovalManager, ToolCallGuard};
 use dream_engine_providers::provider::{LlmProvider, create_provider};
 use dream_engine_tools::registry::ToolRegistry;
 use dream_engine_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
@@ -423,9 +423,9 @@ impl AgentEngine {
     ///
     /// Distinct from [`set_approval_manager`](Self::set_approval_manager): that
     /// decides who gets asked, this decides what is allowed at all. See
-    /// [`ToolPolicyGate`] for why the two are not the same question.
-    pub fn set_tool_policy_gate(&mut self, gate: Arc<dyn ToolPolicyGate>) {
-        self.tools.set_policy_gate(gate);
+    /// [`ToolCallGuard`] for why the two are not the same question.
+    pub fn set_tool_call_guard(&mut self, guard: Arc<dyn ToolCallGuard>) {
+        self.tools.set_call_guard(guard);
     }
 
     /// Set the initial reasoning effort override (used by sub-agents spawned with an effort override).

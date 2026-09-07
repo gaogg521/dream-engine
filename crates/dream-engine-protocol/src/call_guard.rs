@@ -21,18 +21,23 @@
 //! No gate installed (the default, and the only case for a standalone CLI user)
 //! means every call proceeds exactly as before.
 
+use async_trait::async_trait;
 use serde_json::Value;
 
 /// Consulted immediately before a tool executes.
 ///
-/// Synchronous on purpose: an implementation is expected to be a lock read over
-/// an already-resolved policy, and every tool call in a turn pays for it.
-/// Anything that needs to await belongs in a hook, not here.
-pub trait ToolPolicyGate: Send + Sync {
+/// Async because the two implementations One Work ships differ: a desktop
+/// member's policy is a lock read over an already-synced copy, but the same
+/// engine runs on the company server, where the answer comes from the
+/// database. A sync signature would have forced that one to block a runtime
+/// thread. Every tool call in a turn pays for this, so an implementation
+/// should still resolve without I/O wherever it can.
+#[async_trait]
+pub trait ToolCallGuard: Send + Sync {
     /// `Some(reason)` refuses the call and surfaces `reason` to the model;
     /// `None` lets it run.
     ///
     /// `reason` is shown to the user as the tool's output, so it should say
     /// what was refused and by what — not just "denied".
-    fn check(&self, tool_name: &str, input: &Value) -> Option<String>;
+    async fn check(&self, tool_name: &str, input: &Value) -> Option<String>;
 }
