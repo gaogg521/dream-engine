@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use dream_engine_agent::commands::CommandSpec;
 use dream_engine_agent::engine::AgentEngine;
 use dream_engine_agent::error::AgentError;
@@ -10,7 +11,6 @@ use dream_engine_protocol::commands::{ApprovalScope, SessionMode};
 use dream_engine_protocol::writer::ProtocolEmitter;
 use dream_engine_protocol::{ToolApprovalManager, ToolApprovalResult};
 use dream_engine_types::message::Message;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time;
 

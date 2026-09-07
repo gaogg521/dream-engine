@@ -5,13 +5,13 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use async_trait::async_trait;
 use dream_engine_agent::plan::prompt::plan_mode_instructions;
 use dream_engine_agent::plan::tools::{EnterPlanModeTool, ExitPlanModeTool};
 use dream_engine_protocol::events::ToolCategory;
 use dream_engine_tools::Tool;
 use dream_engine_tools::registry::ToolRegistry;
 use dream_engine_types::skill_types::PlanModeTransition;
-use async_trait::async_trait;
 use serde_json::json;
 
 // ---------------------------------------------------------------------------

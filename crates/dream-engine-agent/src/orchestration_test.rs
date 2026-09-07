@@ -248,8 +248,15 @@ mod tests {
             input: json!({}),
             extra: None,
         };
-        let (result, _, follow_up_blocks) =
-            execute_single(&registry, &call, None, dream_engine_compact::CompactLevel::Off, false, 10_000).await;
+        let (result, _, follow_up_blocks) = execute_single(
+            &registry,
+            &call,
+            None,
+            dream_engine_compact::CompactLevel::Off,
+            false,
+            10_000,
+        )
+        .await;
         assert!(follow_up_blocks.is_empty());
         if let ContentBlock::ToolResult { content, is_error, .. } = &result {
             assert!(is_error);
@@ -271,8 +278,15 @@ mod tests {
             input: json!({"tasks": "not_an_array"}),
             extra: None,
         };
-        let (result, _, follow_up_blocks) =
-            execute_single(&registry, &call, None, dream_engine_compact::CompactLevel::Off, false, 10_000).await;
+        let (result, _, follow_up_blocks) = execute_single(
+            &registry,
+            &call,
+            None,
+            dream_engine_compact::CompactLevel::Off,
+            false,
+            10_000,
+        )
+        .await;
         assert!(follow_up_blocks.is_empty());
         if let ContentBlock::ToolResult { content, is_error, .. } = &result {
             // Tool succeeds because input.get("tasks") is Some
@@ -292,8 +306,15 @@ mod tests {
             input: json!({"tasks": [{"name": "t1", "prompt": "do x"}]}),
             extra: None,
         };
-        let (result, _, follow_up_blocks) =
-            execute_single(&registry, &call, None, dream_engine_compact::CompactLevel::Off, false, 10_000).await;
+        let (result, _, follow_up_blocks) = execute_single(
+            &registry,
+            &call,
+            None,
+            dream_engine_compact::CompactLevel::Off,
+            false,
+            10_000,
+        )
+        .await;
         assert!(follow_up_blocks.is_empty());
         if let ContentBlock::ToolResult { content, is_error, .. } = &result {
             assert!(!is_error);
@@ -312,8 +333,15 @@ mod tests {
             input: json!({}),
             extra: None,
         };
-        let (result, _, follow_up_blocks) =
-            execute_single(&registry, &call, None, dream_engine_compact::CompactLevel::Off, false, 10_000).await;
+        let (result, _, follow_up_blocks) = execute_single(
+            &registry,
+            &call,
+            None,
+            dream_engine_compact::CompactLevel::Off,
+            false,
+            10_000,
+        )
+        .await;
         assert!(follow_up_blocks.is_empty());
         if let ContentBlock::ToolResult { content, is_error, .. } = &result {
             assert!(is_error);
@@ -322,5 +350,102 @@ mod tests {
         } else {
             panic!("expected ToolResult");
         }
+    }
+
+    // -- host tool policy -----------------------------------------------------
+
+    /// Refuses anything whose serialized input mentions the needle.
+    struct NeedleGate {
+        needle: &'static str,
+    }
+
+    impl dream_engine_protocol::ToolPolicyGate for NeedleGate {
+        fn check(&self, tool_name: &str, input: &serde_json::Value) -> Option<String> {
+            input
+                .to_string()
+                .contains(self.needle)
+                .then(|| format!("{tool_name} refused by company policy"))
+        }
+    }
+
+    /// The whole point of the gate: it is not an approval, so full-auto does
+    /// not get to skip it. `execute_single` runs after every approval decision
+    /// has already been made, so reaching it at all means the call was cleared
+    /// to run — and it must still be refused.
+    #[tokio::test]
+    async fn a_host_policy_refuses_a_call_that_approval_already_cleared() {
+        let mut registry = make_registry_with_deferred();
+        registry.set_policy_gate(std::sync::Arc::new(NeedleGate { needle: "BLOCKME" }));
+        let call = ContentBlock::ToolUse {
+            id: "call_5".into(),
+            name: "MockNonDeferred".into(),
+            input: json!({"cmd": "echo BLOCKME"}),
+            extra: None,
+        };
+        let (result, _, _) = execute_single(
+            &registry,
+            &call,
+            None,
+            dream_engine_compact::CompactLevel::Off,
+            false,
+            10_000,
+        )
+        .await;
+        let ContentBlock::ToolResult { content, is_error, .. } = &result else {
+            panic!("expected ToolResult");
+        };
+        assert!(is_error);
+        assert_eq!(content, "MockNonDeferred refused by company policy");
+    }
+
+    #[tokio::test]
+    async fn a_host_policy_leaves_everything_else_alone() {
+        let mut registry = make_registry_with_deferred();
+        registry.set_policy_gate(std::sync::Arc::new(NeedleGate { needle: "BLOCKME" }));
+        let call = ContentBlock::ToolUse {
+            id: "call_6".into(),
+            name: "MockNonDeferred".into(),
+            input: json!({"cmd": "echo hello"}),
+            extra: None,
+        };
+        let (result, _, _) = execute_single(
+            &registry,
+            &call,
+            None,
+            dream_engine_compact::CompactLevel::Off,
+            false,
+            10_000,
+        )
+        .await;
+        let ContentBlock::ToolResult { content, is_error, .. } = &result else {
+            panic!("expected ToolResult");
+        };
+        assert!(!is_error, "unexpected refusal: {content}");
+    }
+
+    /// No gate installed is the standalone-CLI case and must behave exactly as
+    /// it did before the gate existed.
+    #[tokio::test]
+    async fn no_policy_installed_changes_nothing() {
+        let registry = make_registry_with_deferred();
+        let call = ContentBlock::ToolUse {
+            id: "call_7".into(),
+            name: "MockNonDeferred".into(),
+            input: json!({"cmd": "echo BLOCKME"}),
+            extra: None,
+        };
+        let (result, _, _) = execute_single(
+            &registry,
+            &call,
+            None,
+            dream_engine_compact::CompactLevel::Off,
+            false,
+            10_000,
+        )
+        .await;
+        let ContentBlock::ToolResult { is_error, .. } = &result else {
+            panic!("expected ToolResult");
+        };
+        assert!(!is_error);
     }
 }

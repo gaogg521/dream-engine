@@ -1,11 +1,11 @@
 mod common;
 
+use common::{MockTool, auto_approve_confirmer};
 use dream_engine_agent::orchestration::execute_tool_calls;
 use dream_engine_compact::CompactLevel;
 use dream_engine_config::hooks::{HookDef, HookEngine, HooksConfig};
 use dream_engine_tools::registry::ToolRegistry;
 use dream_engine_types::message::ContentBlock;
-use common::{MockTool, auto_approve_confirmer};
 use serde_json::json;
 
 // ---------------------------------------------------------------------------

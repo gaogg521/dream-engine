@@ -407,13 +407,7 @@ mod supplemental_tests {
 
     #[test]
     fn tc_15_2_skill_dir_and_arguments_same_line() {
-        let r = substitute_arguments(
-            "${DREAM_SKILL_DIR}: $ARGUMENTS",
-            Some("test"),
-            &[],
-            Some("/root"),
-            None,
-        );
+        let r = substitute_arguments("${DREAM_SKILL_DIR}: $ARGUMENTS", Some("test"), &[], Some("/root"), None);
         assert_eq!(r, "/root: test");
     }
 

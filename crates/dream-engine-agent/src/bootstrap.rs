@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
+use anyhow::Result;
 use dream_engine_config::config::{Config, McpServerConfig};
 use dream_engine_config::shell::{ResolvedShell, resolve_shell_config};
 use dream_engine_mcp::manager::McpManager;
@@ -25,7 +26,6 @@ use dream_engine_tools::view_image::ViewImageTool;
 use dream_engine_tools::write::WriteTool;
 use dream_engine_types::message::TokenUsage;
 use dream_engine_types::usage::DelegateUsageSink;
-use anyhow::Result;
 use tracing::info;
 
 use crate::context::{SystemPromptCache, build_system_prompt_with_shell_and_tool_policy};

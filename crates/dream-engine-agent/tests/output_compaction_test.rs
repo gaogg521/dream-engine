@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
+use common::{MockLlmProvider, MockTool, auto_approve_confirmer, test_config};
 use dream_engine_agent::context::{SystemPromptCache, build_system_prompt};
 use dream_engine_agent::engine::AgentEngine;
 use dream_engine_agent::orchestration::execute_tool_calls;
@@ -15,7 +16,6 @@ use dream_engine_providers::{LlmProvider, ProviderError};
 use dream_engine_tools::registry::ToolRegistry;
 use dream_engine_types::llm::{LlmEvent, LlmRequest};
 use dream_engine_types::message::{ContentBlock, StopReason, TokenUsage};
-use common::{MockLlmProvider, MockTool, auto_approve_confirmer, test_config};
 use serde_json::json;
 
 const TEST_OUTPUT: &str = "\x1b[32mSTATUS: OK\x1b[0m\n\n\n\n50%\r100%\nCompiling dep-0 v1.0.0\nCompiling dep-1 v1.0.0\nCompiling dep-2 v1.0.0\nCompiling dep-3 v1.0.0\nCompiling dep-4 v1.0.0\n{\n    \"id\": 1,\n    \"name\": \"Alice Wonderland\",\n    \"email\": \"alice@example.com\",\n    \"age\": 30,\n    \"address\": \"123 Main Street, Anytown, USA 12345\",\n    \"phone\": \"+1-555-0123\"\n}";

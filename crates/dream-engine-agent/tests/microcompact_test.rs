@@ -4,10 +4,10 @@
 //! They treat `should_microcompact` and `microcompact` as opaque functions
 //! and validate observable behaviour only (inputs → outputs).
 
+use chrono::{Duration, Utc};
 use dream_engine_agent::compact::micro::{CLEARED_TOOL_RESULT, MicrocompactResult, microcompact, should_microcompact};
 use dream_engine_config::compact::CompactConfig;
 use dream_engine_types::message::{ContentBlock, Message, Role};
-use chrono::{Duration, Utc};
 use serde_json::json;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

@@ -7,10 +7,10 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use dream_engine_mcp::manager::McpManager;
     use dream_engine_mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
     use dream_engine_mcp::transport::{McpError, McpTransport};
-    use async_trait::async_trait;
     use std::sync::Mutex;
 
     // -----------------------------------------------------------------------

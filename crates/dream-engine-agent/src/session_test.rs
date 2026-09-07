@@ -3,8 +3,8 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dream_engine_types::message::{ContentBlock, Message, Role};
     use chrono::Duration;
+    use dream_engine_types::message::{ContentBlock, Message, Role};
     use std::fs;
     use std::path::Path;
     use std::sync::{Arc, Barrier};

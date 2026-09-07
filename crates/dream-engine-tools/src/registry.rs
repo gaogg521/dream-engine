@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
+use dream_engine_protocol::ToolPolicyGate;
 use dream_engine_types::tool::ToolDef;
 
 use crate::Tool;
@@ -16,6 +17,13 @@ pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
     /// Deferred tools promoted to full-schema declaration for this session.
     loaded_schemas: LoadedSchemaSet,
+    /// A host-installed veto consulted before any tool here runs.
+    ///
+    /// It lives on the registry rather than travelling as a parameter because
+    /// the registry is the one thing every execution path already carries, and
+    /// the alternative was threading an extra argument through four functions
+    /// that are already `#[allow(clippy::too_many_arguments)]`.
+    policy_gate: Option<Arc<dyn ToolPolicyGate>>,
 }
 
 impl Default for ToolRegistry {
@@ -28,7 +36,18 @@ impl ToolRegistry {
         Self {
             tools: Vec::new(),
             loaded_schemas: Arc::new(Mutex::new(HashSet::new())),
+            policy_gate: None,
         }
+    }
+
+    /// Install the host's tool policy. Absent by default: a standalone user has
+    /// no company rules, and every call proceeds as it always did.
+    pub fn set_policy_gate(&mut self, gate: Arc<dyn ToolPolicyGate>) {
+        self.policy_gate = Some(gate);
+    }
+
+    pub fn policy_gate(&self) -> Option<&Arc<dyn ToolPolicyGate>> {
+        self.policy_gate.as_ref()
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
