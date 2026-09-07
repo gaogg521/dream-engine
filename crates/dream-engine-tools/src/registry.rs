@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use dream_engine_protocol::ToolPolicyGate;
+use dream_engine_protocol::ToolCallGuard;
 use dream_engine_types::tool::ToolDef;
 
 use crate::Tool;
@@ -23,7 +23,7 @@ pub struct ToolRegistry {
     /// the registry is the one thing every execution path already carries, and
     /// the alternative was threading an extra argument through four functions
     /// that are already `#[allow(clippy::too_many_arguments)]`.
-    policy_gate: Option<Arc<dyn ToolPolicyGate>>,
+    call_guard: Option<Arc<dyn ToolCallGuard>>,
 }
 
 impl Default for ToolRegistry {
@@ -36,18 +36,18 @@ impl ToolRegistry {
         Self {
             tools: Vec::new(),
             loaded_schemas: Arc::new(Mutex::new(HashSet::new())),
-            policy_gate: None,
+            call_guard: None,
         }
     }
 
     /// Install the host's tool policy. Absent by default: a standalone user has
     /// no company rules, and every call proceeds as it always did.
-    pub fn set_policy_gate(&mut self, gate: Arc<dyn ToolPolicyGate>) {
-        self.policy_gate = Some(gate);
+    pub fn set_call_guard(&mut self, guard: Arc<dyn ToolCallGuard>) {
+        self.call_guard = Some(guard);
     }
 
-    pub fn policy_gate(&self) -> Option<&Arc<dyn ToolPolicyGate>> {
-        self.policy_gate.as_ref()
+    pub fn call_guard(&self) -> Option<&Arc<dyn ToolCallGuard>> {
+        self.call_guard.as_ref()
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {

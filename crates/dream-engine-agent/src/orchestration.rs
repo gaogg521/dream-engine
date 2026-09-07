@@ -201,10 +201,10 @@ async fn execute_single(
     // hook it is not the operator's to configure or switch off, so it must not
     // sit behind one — a hook that fails to spawn would otherwise let a
     // company-blocked command through.
-    if let Some(gate) = registry.policy_gate()
-        && let Some(reason) = gate.check(name, input)
+    if let Some(guard) = registry.call_guard()
+        && let Some(reason) = guard.check(name, input).await
     {
-        tracing::warn!(target: "dream_engine_agent", tool = %name, call_id = %id, %reason, "tool call refused by host policy");
+        tracing::warn!(target: "dream_engine_agent", tool = %name, call_id = %id, %reason, "tool call refused by the host's call guard");
         return (
             ContentBlock::ToolResult {
                 tool_use_id: id.clone(),
