@@ -34,22 +34,22 @@ use crate::turn::{
     FinalizationReason, MAX_TRUNCATION_CONTINUATIONS, ToolLoopWarning, TurnGuardAction, TurnGuards, TurnKind,
     TurnOutcome,
 };
+use anyhow::{Error as AnyhowError, Result as AnyhowResult};
+use chrono::Utc;
 use dream_engine_compact::CompactLevel;
 use dream_engine_config::compact::CompactConfig;
 use dream_engine_config::compat::ProviderCompat;
 use dream_engine_config::config::Config;
 use dream_engine_config::hooks::HookEngine;
-use dream_engine_protocol::ToolApprovalManager;
 use dream_engine_protocol::events::ToolCategory;
 use dream_engine_protocol::writer::ProtocolEmitter;
+use dream_engine_protocol::{ToolApprovalManager, ToolPolicyGate};
 use dream_engine_providers::provider::{LlmProvider, create_provider};
 use dream_engine_tools::registry::ToolRegistry;
 use dream_engine_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use dream_engine_types::message::{ContentBlock, ImageInputCapability, Message, Role, StopReason, TokenUsage};
 use dream_engine_types::skill_types::{ContextModifier, PlanModeTransition, effort_to_string};
 use dream_engine_types::tool::ToolDef;
-use anyhow::{Error as AnyhowError, Result as AnyhowResult};
-use chrono::Utc;
 use serde_json::to_string;
 use tokio::sync::mpsc::Receiver;
 use tracing::{Instrument, debug, error, info, info_span, warn};
@@ -417,6 +417,15 @@ impl AgentEngine {
 
     pub fn set_protocol_writer(&mut self, writer: Arc<dyn ProtocolEmitter>) {
         self.protocol_writer = Some(writer);
+    }
+
+    /// Install a policy that refuses tool calls regardless of approval mode.
+    ///
+    /// Distinct from [`set_approval_manager`](Self::set_approval_manager): that
+    /// decides who gets asked, this decides what is allowed at all. See
+    /// [`ToolPolicyGate`] for why the two are not the same question.
+    pub fn set_tool_policy_gate(&mut self, gate: Arc<dyn ToolPolicyGate>) {
+        self.tools.set_policy_gate(gate);
     }
 
     /// Set the initial reasoning effort override (used by sub-agents spawned with an effort override).

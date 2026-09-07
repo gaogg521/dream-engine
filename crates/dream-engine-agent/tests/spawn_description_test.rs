@@ -7,11 +7,11 @@ mod common;
 
 use std::sync::Arc;
 
+use common::{MockLlmProvider, test_config};
 use dream_engine_agent::spawn_tool::SpawnTool;
 use dream_engine_agent::spawner::AgentSpawner;
 use dream_engine_agent::tool_policy::ToolPolicy;
 use dream_engine_tools::Tool;
-use common::{MockLlmProvider, test_config};
 
 fn make_spawn_tool() -> SpawnTool {
     let provider = Arc::new(MockLlmProvider::with_text_response("ok"));

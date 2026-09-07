@@ -5,13 +5,13 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    use async_trait::async_trait;
     use dream_engine_config::compat::ProviderCompat;
     use dream_engine_config::config::{CliArgs, McpServerConfig, ProviderType, TransportType, VisionModelConfig};
     use dream_engine_protocol::events::ToolCategory;
     use dream_engine_tools::Tool;
     use dream_engine_types::message::ImageInputCapability;
     use dream_engine_types::tool::ToolResult;
-    use async_trait::async_trait;
     use serde_json::{Value, json};
 
     use crate::output::OutputSink;

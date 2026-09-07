@@ -609,14 +609,16 @@ mod tests_compact {
     use std::env;
     use std::sync::{Arc, Mutex};
 
+    use chrono::Utc;
     use dream_engine_config::compact::CompactConfig;
     use dream_engine_config::config::{CliArgs, Config};
     use dream_engine_providers::error::ProviderError;
     use dream_engine_providers::provider::LlmProvider;
     use dream_engine_tools::registry::ToolRegistry;
     use dream_engine_types::llm::{LlmEvent, LlmRequest};
-    use dream_engine_types::message::{ContentBlock, ImageInputCapability, ImageUrl, Message, Role, StopReason, TokenUsage};
-    use chrono::Utc;
+    use dream_engine_types::message::{
+        ContentBlock, ImageInputCapability, ImageUrl, Message, Role, StopReason, TokenUsage,
+    };
     use serde_json::json;
     use tempfile::tempdir;
     use tokio::sync::mpsc;
@@ -932,7 +934,12 @@ mod tests_compact {
         // "Cache full miss" line to the user mid-session.
         let quiet = run_ttl_expiry_full_miss(false);
         assert!(
-            !quiet.infos.lock().unwrap().iter().any(|msg| msg.contains("Cache full miss")),
+            !quiet
+                .infos
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|msg| msg.contains("Cache full miss")),
             "full cache miss should be silent in the transcript by default"
         );
 
@@ -1724,6 +1731,7 @@ mod tests_handle_command {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    use async_trait::async_trait;
     use dream_engine_config::compact::CompactConfig;
     use dream_engine_protocol::events::ToolCategory;
     use dream_engine_providers::error::ProviderError;
@@ -1731,9 +1739,10 @@ mod tests_handle_command {
     use dream_engine_tools::Tool;
     use dream_engine_tools::registry::ToolRegistry;
     use dream_engine_types::llm::{LlmEvent, LlmRequest};
-    use dream_engine_types::message::{ContentBlock, ImageInputCapability, ImageUrl, Message, Role, StopReason, TokenUsage};
+    use dream_engine_types::message::{
+        ContentBlock, ImageInputCapability, ImageUrl, Message, Role, StopReason, TokenUsage,
+    };
     use dream_engine_types::tool::ToolResult;
-    use async_trait::async_trait;
     use serde_json::{Value, json};
     use tokio::sync::mpsc::{Receiver, channel};
 
@@ -2721,6 +2730,7 @@ mod tests_tool_policy_enforcement {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    use async_trait::async_trait;
     use dream_engine_protocol::events::ToolCategory;
     use dream_engine_providers::error::ProviderError;
     use dream_engine_providers::provider::LlmProvider;
@@ -2729,7 +2739,6 @@ mod tests_tool_policy_enforcement {
     use dream_engine_types::llm::{LlmEvent, LlmRequest};
     use dream_engine_types::message::{ContentBlock, ImageInputCapability};
     use dream_engine_types::tool::ToolResult;
-    use async_trait::async_trait;
     use serde_json::{Value, json};
 
     use super::{AgentEngine, CacheBreakDetector, CompactLevel, CompactState, ProviderCompat};

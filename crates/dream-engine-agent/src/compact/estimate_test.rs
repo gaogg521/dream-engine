@@ -3,9 +3,9 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dream_engine_types::message::ImageUrl;
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD;
+    use dream_engine_types::message::ImageUrl;
 
     #[test]
     fn final_tool_result_is_estimated_directly() {

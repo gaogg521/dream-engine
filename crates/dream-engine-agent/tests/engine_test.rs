@@ -2,6 +2,7 @@ mod common;
 
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use dream_engine_agent::engine::AgentEngine;
 use dream_engine_agent::error::AgentError;
 use dream_engine_agent::output::OutputSink;
@@ -11,7 +12,6 @@ use dream_engine_providers::{LlmProvider, ProviderError};
 use dream_engine_tools::registry::ToolRegistry;
 use dream_engine_types::llm::{LlmEvent, LlmRequest};
 use dream_engine_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
-use async_trait::async_trait;
 use serde_json::{Value, json};
 use tempfile::tempdir;
 use tokio::sync::mpsc;

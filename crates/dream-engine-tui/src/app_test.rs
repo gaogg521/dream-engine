@@ -1,7 +1,7 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use dream_engine_protocol::ToolApprovalResult;
 use dream_engine_protocol::commands::SessionMode;
 use dream_engine_protocol::events::ToolCategory;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::oneshot;
 
 use super::{IdleAction, TuiMetadata, TuiOutcome, TuiRuntime, application_help, permission_mode, starts_conversation};

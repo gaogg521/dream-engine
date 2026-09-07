@@ -16,11 +16,11 @@ use dream_engine_config::compat::ProviderCompat;
 use dream_engine_types::llm::{LlmEvent, LlmRequest};
 use dream_engine_types::message::{StopReason, TokenUsage};
 
+use crate::LlmProvider;
 use crate::composed::ComposedProvider;
 use crate::error::{ProviderError, provider_error_from_json_body};
 use crate::openai_messages::generate_call_id;
 use crate::transport::{OllamaTransport, ProviderTransport};
-use crate::{LlmProvider};
 
 pub struct OllamaProvider {
     inner: ComposedProvider,
@@ -185,7 +185,11 @@ pub(crate) fn parse_ollama_ndjson_line(line: &str, state: &mut OllamaStreamState
         for tool_call in tool_calls {
             let name = tool_call["function"]["name"].as_str().unwrap_or_default().to_string();
             let input = tool_call["function"]["arguments"].clone();
-            let input = if input.is_null() { Value::Object(Map::new()) } else { input };
+            let input = if input.is_null() {
+                Value::Object(Map::new())
+            } else {
+                input
+            };
             state.emitted_tool_use = true;
             events.push(LlmEvent::ToolUse {
                 id: generate_call_id(),

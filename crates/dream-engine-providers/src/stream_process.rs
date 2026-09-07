@@ -6,7 +6,9 @@ use dream_engine_types::llm::LlmEvent;
 use dream_engine_types::message::{StopReason, TokenUsage};
 
 use crate::error::ProviderError;
-use crate::framing::{FrameKind, NdjsonFramer, SseBlockFramer, SseLineFramer, Utf8StreamDecoder, bedrock_payload_to_frame};
+use crate::framing::{
+    FrameKind, NdjsonFramer, SseBlockFramer, SseLineFramer, Utf8StreamDecoder, bedrock_payload_to_frame,
+};
 use crate::ollama::{OllamaStreamState, parse_ollama_ndjson_line};
 use crate::openai::StreamState as OpenAiStreamState;
 use crate::parser::{AnthropicParser, OpenAiParser, OpenAiResponsesParser, ResponseParser};
