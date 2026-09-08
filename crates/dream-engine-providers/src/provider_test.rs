@@ -104,6 +104,7 @@ mod tests {
             mcp: McpConfig::default(),
             logging: LoggingConfig::default(),
             vision: None,
+            extra_headers: None,
         }
     }
 

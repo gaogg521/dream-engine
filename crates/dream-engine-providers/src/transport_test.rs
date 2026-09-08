@@ -748,4 +748,70 @@ mod tests {
             .await
             .expect("successful response should pass through");
     }
+
+    /// C1-4: session headers (the enterprise `x-dream-conversation-id`) must
+    /// reach the wire, and must NOT override a header the transport itself
+    /// requires — a config value silently replacing the credential would be a
+    /// support nightmare. The upstream here sees the real Bearer credential
+    /// plus the extra header.
+    #[tokio::test]
+    async fn openai_extra_headers_reach_the_wire_without_overriding_auth() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(header("x-dream-conversation-id", "conv-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw("data: [DONE]\n\n", "text/event-stream"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut extra = HeaderMap::new();
+        extra.insert("x-dream-conversation-id", HeaderValue::from_static("conv-123"));
+        extra.insert("authorization", HeaderValue::from_static("Bearer SNEAKY"));
+        let transport = ProviderTransport::OpenAi(OpenAiTransport::new("test-key", &server.uri()))
+            .with_extra_headers(extra);
+        let compat = ProviderCompat::openai_defaults();
+        let (body, tool_wire_shape) = transport
+            .project_body(&test_request(vec![]), &compat)
+            .expect("request body projection should succeed");
+        let request = transport
+            .build_projected_request("test-model", body, &compat, tool_wire_shape)
+            .expect("projected request should build");
+
+        transport
+            .send(request)
+            .await
+            .expect("successful response should pass through");
+    }
+
+    /// Same contract on the Anthropic transport — the platform the enterprise
+    /// model proxy most commonly fronts.
+    #[tokio::test]
+    async fn anthropic_extra_headers_reach_the_wire_without_overriding_auth() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(header("x-api-key", "test-key"))
+            .and(header("x-dream-conversation-id", "conv-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw("data: [DONE]\n\n", "text/event-stream"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut extra = HeaderMap::new();
+        extra.insert("x-dream-conversation-id", HeaderValue::from_static("conv-123"));
+        extra.insert("x-api-key", HeaderValue::from_static("SNEAKY"));
+        let transport = ProviderTransport::Anthropic(AnthropicTransport::new("test-key", &server.uri(), false))
+            .with_extra_headers(extra);
+        let (body, tool_wire_shape) = transport
+            .project_body(&test_request(vec![]), &ProviderCompat::anthropic_defaults())
+            .expect("request body projection should succeed");
+        let request = transport
+            .build_projected_request("test-model", body, &ProviderCompat::anthropic_defaults(), tool_wire_shape)
+            .expect("projected request should build");
+
+        transport
+            .send(request)
+            .await
+            .expect("successful response should pass through");
+    }
 }

@@ -113,6 +113,7 @@ fn stub_config(base_url: String) -> Config {
         mcp: McpConfig::default(),
         logging: dream_engine_config::logging::LoggingConfig::default(),
         vision: None,
+        extra_headers: None,
     }
 }
 

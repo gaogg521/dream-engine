@@ -29,6 +29,14 @@ pub struct BedrockProvider {
 }
 
 impl BedrockProvider {
+    /// Attach headers sent with every upstream request (session metadata
+    /// such as the enterprise `x-dream-conversation-id`). Generic transport
+    /// capability — never overrides a provider-required header.
+    pub fn with_extra_headers(mut self, extra_headers: reqwest::header::HeaderMap) -> Self {
+        self.inner = self.inner.with_extra_headers(extra_headers);
+        self
+    }
+
     pub fn new(
         region: &str,
         credentials: AwsCredentials,
@@ -81,6 +89,11 @@ pub(crate) struct BedrockTransportState {
     /// Static `Authorization: Bearer` credential for proxied/gateway endpoints;
     /// takes precedence over SigV4 when present (set only together with `base_url`).
     bearer_token: Option<String>,
+    /// Headers sent with every request (session metadata such as the
+    /// enterprise `x-dream-conversation-id`). Empty by default. Applied in
+    /// `build_projected_request` BEFORE SigV4 signing, so the signature covers
+    /// exactly the headers that go on the wire.
+    pub(crate) extra_headers: HeaderMap,
 }
 
 impl BedrockTransportState {
@@ -98,6 +111,7 @@ impl BedrockTransportState {
             cache_enabled,
             base_url,
             bearer_token,
+            extra_headers: HeaderMap::new(),
         }
     }
 
@@ -263,6 +277,7 @@ impl BedrockTransportState {
 
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        crate::transport::apply_extra_headers(&mut headers, &self.extra_headers);
 
         if let Some(token) = &self.bearer_token {
             // Proxied/gateway endpoint: the proxy strips client authorization

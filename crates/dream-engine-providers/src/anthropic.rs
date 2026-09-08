@@ -19,6 +19,14 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
+    /// Attach headers sent with every upstream request (session metadata
+    /// such as the enterprise `x-dream-conversation-id`). Generic transport
+    /// capability — never overrides a provider-required header.
+    pub fn with_extra_headers(mut self, extra_headers: reqwest::header::HeaderMap) -> Self {
+        self.inner = self.inner.with_extra_headers(extra_headers);
+        self
+    }
+
     pub fn new(api_key: &str, base_url: &str, compat: ProviderCompat) -> Self {
         let cache_enabled = true;
         let inner = Self::build_inner(api_key, base_url, cache_enabled, &compat);
