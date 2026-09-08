@@ -46,6 +46,13 @@ impl ComposedProvider {
         }
     }
 
+    /// Attach headers sent with every upstream request. Must be applied after
+    /// any caller-side rebuild of the transport.
+    pub(crate) fn with_extra_headers(mut self, extra_headers: reqwest::header::HeaderMap) -> Self {
+        self.transport = self.transport.with_extra_headers(extra_headers);
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn build_request_body(&self, request: &LlmRequest) -> Result<Value, ProviderError> {
         let (body, _) = self.transport.project_body(request, &self.compat)?;

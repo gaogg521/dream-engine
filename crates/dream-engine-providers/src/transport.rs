@@ -41,6 +41,9 @@ pub(crate) struct OpenAiTransport {
     client: reqwest::Client,
     api_key: String,
     base_url: String,
+    /// Headers sent with every request (session metadata such as the
+    /// enterprise `x-dream-conversation-id`). Empty by default.
+    extra_headers: HeaderMap,
 }
 
 #[derive(Clone)]
@@ -49,6 +52,8 @@ pub(crate) struct AnthropicTransport {
     api_key: String,
     base_url: String,
     cache_enabled: bool,
+    /// See [`OpenAiTransport::extra_headers`].
+    extra_headers: HeaderMap,
 }
 
 #[derive(Clone)]
@@ -69,6 +74,8 @@ pub(crate) struct OllamaTransport {
     /// reverse proxy.
     api_key: String,
     base_url: String,
+    /// See [`OpenAiTransport::extra_headers`].
+    extra_headers: HeaderMap,
 }
 
 #[derive(Clone, Debug)]
@@ -97,6 +104,7 @@ impl OpenAiTransport {
             client,
             api_key: api_key.to_string(),
             base_url: normalize_openai_base_url(base_url),
+            extra_headers: HeaderMap::new(),
         }
     }
 
@@ -112,6 +120,7 @@ impl OpenAiTransport {
             .map_err(|error| ProviderError::Connection(format!("Invalid authorization header: {error}")))?;
         headers.insert(AUTHORIZATION, auth);
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        apply_extra_headers(&mut headers, &self.extra_headers);
 
         Ok(ProjectedHttpRequest {
             url: join_base_url_and_api_path(&self.base_url, compat.openai_api_path()),
@@ -134,6 +143,7 @@ impl AnthropicTransport {
             api_key: api_key.to_string(),
             base_url: base_url.to_string(),
             cache_enabled,
+            extra_headers: HeaderMap::new(),
         }
     }
 
@@ -151,6 +161,7 @@ impl AnthropicTransport {
         if self.cache_enabled {
             headers.insert("anthropic-beta", HeaderValue::from_static("prompt-caching-2024-07-31"));
         }
+        apply_extra_headers(&mut headers, &self.extra_headers);
 
         Ok(ProjectedHttpRequest {
             url: format!("{}/v1/messages", self.base_url),
@@ -172,6 +183,7 @@ impl OllamaTransport {
             client: crate::http_client::build(),
             api_key: api_key.to_string(),
             base_url: base_url.trim_end_matches('/').to_string(),
+            extra_headers: HeaderMap::new(),
         }
     }
 
@@ -188,6 +200,7 @@ impl OllamaTransport {
             headers.insert(AUTHORIZATION, auth);
         }
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        apply_extra_headers(&mut headers, &self.extra_headers);
 
         Ok(ProjectedHttpRequest {
             url: format!("{}/api/chat", self.base_url),
@@ -204,6 +217,25 @@ impl OllamaTransport {
 }
 
 impl ProviderTransport {
+    /// Attach session headers (e.g. the enterprise model proxy's
+    /// `x-dream-conversation-id`) that every upstream request of this
+    /// provider will carry. A generic capability of the transports, not a
+    /// provider-conditional behavior — which provider is in use only decides
+    /// which struct stores the map. Must be applied after any builder that
+    /// rebuilds the transport (e.g. Anthropic's `with_cache`).
+    pub(crate) fn with_extra_headers(mut self, extra: HeaderMap) -> Self {
+        if !extra.is_empty() {
+            match &mut self {
+                Self::OpenAi(transport) => transport.extra_headers = extra,
+                Self::Anthropic(transport) => transport.extra_headers = extra,
+                Self::Vertex(transport) => transport.inner.extra_headers = extra,
+                Self::Bedrock(transport) => transport.inner.extra_headers = extra,
+                Self::Ollama(transport) => transport.extra_headers = extra,
+            }
+        }
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn wire_protocol(&self, compat: &ProviderCompat) -> WireProtocol {
         match self {
@@ -330,6 +362,17 @@ fn join_base_url_and_api_path(base_url: &str, api_path: &str) -> String {
         base.to_string()
     } else {
         format!("{base}/{path}")
+    }
+}
+
+/// Merge the configured extra headers into a request's header map. A header
+/// the transport itself requires (authorization, x-api-key, content-type,
+/// anthropic-version) always wins: those are inserted first and the extra map
+/// only fills the gaps, so a config value can never silently replace the
+/// credential or break the wire protocol.
+pub(crate) fn apply_extra_headers(headers: &mut HeaderMap, extra: &HeaderMap) {
+    for (name, value) in extra {
+        headers.entry(name.clone()).or_insert(value.clone());
     }
 }
 

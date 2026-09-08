@@ -268,6 +268,7 @@ pub fn test_config() -> Config {
         mcp: McpConfig::default(),
         logging: dream_engine_config::logging::LoggingConfig::default(),
         vision: None,
+        extra_headers: None,
     }
 }
 

@@ -27,6 +27,14 @@ pub struct VertexProvider {
 }
 
 impl VertexProvider {
+    /// Attach headers sent with every upstream request (session metadata
+    /// such as the enterprise `x-dream-conversation-id`). Generic transport
+    /// capability — never overrides a provider-required header.
+    pub fn with_extra_headers(mut self, extra_headers: reqwest::header::HeaderMap) -> Self {
+        self.inner = self.inner.with_extra_headers(extra_headers);
+        self
+    }
+
     pub fn new(
         project_id: &str,
         region: &str,
@@ -80,6 +88,10 @@ pub(crate) struct VertexTransportState {
     bearer_token: Option<String>,
     /// Cached access token
     cached_token: Arc<Mutex<Option<CachedToken>>>,
+    /// Headers sent with every request (session metadata such as the
+    /// enterprise `x-dream-conversation-id`). Empty by default. Applied in
+    /// `send_stream_request`, the one place this state builds its headers.
+    pub(crate) extra_headers: HeaderMap,
 }
 
 impl VertexTransportState {
@@ -100,6 +112,7 @@ impl VertexTransportState {
             base_url,
             bearer_token,
             cached_token: Arc::new(Mutex::new(None)),
+            extra_headers: HeaderMap::new(),
         }
     }
 
@@ -315,6 +328,7 @@ impl VertexTransportState {
             HeaderValue::from_str(&authorization)
                 .map_err(|e| ProviderError::Connection(format!("Header error: {}", e)))?,
         );
+        crate::transport::apply_extra_headers(&mut headers, &self.extra_headers);
 
         let response = self.client.post(url).headers(headers).json(body).send().await?;
 

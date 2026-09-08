@@ -23,14 +23,40 @@ pub trait LlmProvider: Send + Sync {
 /// Create a provider from resolved config
 pub fn create_provider(config: &Config) -> Arc<dyn LlmProvider> {
     let compat = config.compat.clone();
+    // Session headers (C1-4: the enterprise host injects
+    // `x-dream-conversation-id` here). Parsed once; unparseable names/values
+    // are skipped rather than failing the provider — attribution metadata
+    // must never be able to break the model connection.
+    let extra_headers = config
+        .extra_headers
+        .as_ref()
+        .map(|headers| {
+            headers
+                .iter()
+                .filter_map(|(name, value)| {
+                    Some((
+                        reqwest::header::HeaderName::from_bytes(name.as_bytes()).ok()?,
+                        reqwest::header::HeaderValue::from_str(value).ok()?,
+                    ))
+                })
+                .collect::<reqwest::header::HeaderMap>()
+        })
+        .unwrap_or_default();
 
     match config.provider {
         ProviderType::Anthropic => Arc::new(
             anthropic::AnthropicProvider::new(&config.api_key, &config.base_url, compat)
-                .with_cache(config.prompt_caching),
+                .with_cache(config.prompt_caching)
+                // Applied last: with_cache rebuilds the transport, which would
+                // drop headers set before it.
+                .with_extra_headers(extra_headers),
         ),
-        ProviderType::OpenAI => Arc::new(openai::OpenAIProvider::new(&config.api_key, &config.base_url, compat)),
-        ProviderType::Ollama => Arc::new(ollama::OllamaProvider::new(&config.api_key, &config.base_url, compat)),
+        ProviderType::OpenAI => Arc::new(
+            openai::OpenAIProvider::new(&config.api_key, &config.base_url, compat).with_extra_headers(extra_headers),
+        ),
+        ProviderType::Ollama => Arc::new(
+            ollama::OllamaProvider::new(&config.api_key, &config.base_url, compat).with_extra_headers(extra_headers),
+        ),
         ProviderType::Bedrock => {
             let bc = config.bedrock.clone().unwrap_or_default();
             let region = bc
@@ -41,14 +67,10 @@ pub fn create_provider(config: &Config) -> Arc<dyn LlmProvider> {
                 .unwrap_or_else(|| "us-east-1".to_string());
             let credentials = bedrock::credentials_from_config(&bc);
             let (base_url, bearer_token) = endpoint_override(&config.base_url, &config.api_key);
-            Arc::new(bedrock::BedrockProvider::new(
-                &region,
-                credentials,
-                config.prompt_caching,
-                compat,
-                base_url,
-                bearer_token,
-            ))
+            Arc::new(
+                bedrock::BedrockProvider::new(&region, credentials, config.prompt_caching, compat, base_url, bearer_token)
+                    .with_extra_headers(extra_headers),
+            )
         }
         ProviderType::Vertex => {
             let vc = config.vertex.clone().unwrap_or_default();
@@ -56,15 +78,18 @@ pub fn create_provider(config: &Config) -> Arc<dyn LlmProvider> {
             let region = vc.region.clone().unwrap_or_else(|| "us-central1".to_string());
             let auth = vertex::auth_from_config(&vc);
             let (base_url, bearer_token) = endpoint_override(&config.base_url, &config.api_key);
-            Arc::new(vertex::VertexProvider::new(
-                &project_id,
-                &region,
-                auth,
-                config.prompt_caching,
-                compat,
-                base_url,
-                bearer_token,
-            ))
+            Arc::new(
+                vertex::VertexProvider::new(
+                    &project_id,
+                    &region,
+                    auth,
+                    config.prompt_caching,
+                    compat,
+                    base_url,
+                    bearer_token,
+                )
+                .with_extra_headers(extra_headers),
+            )
         }
     }
 }

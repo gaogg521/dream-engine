@@ -32,6 +32,7 @@ fn minimal_config() -> Config {
         mcp: Default::default(),
         logging: Default::default(),
         vision: None,
+        extra_headers: None,
     }
 }
 

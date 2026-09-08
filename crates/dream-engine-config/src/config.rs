@@ -292,6 +292,17 @@ pub struct Config {
     /// A vision-capable model the agent can delegate image reading to when the
     /// main model itself cannot accept image input. See [`VisionModelConfig`].
     pub vision: Option<VisionModelConfig>,
+    /// Headers sent with every upstream LLM request (C1-4 cost attribution:
+    /// the enterprise host injects `x-dream-conversation-id` here for
+    /// company-channel sessions so the model proxy can attribute usage).
+    /// Generic transport capability, resolved per session — never a
+    /// provider-conditional behavior. `None`/empty sends nothing, which is
+    /// the default for every direct connection.
+    ///
+    /// A configured header never overrides one the transport itself requires
+    /// (authorization, x-api-key, content-type): those are set first and the
+    /// extra map only fills the gaps.
+    pub extra_headers: Option<HashMap<String, String>>,
 }
 
 /// A separately configured, vision-capable model used to turn images into text.
@@ -473,6 +484,7 @@ impl Config {
             mcp: merged.mcp,
             logging: merged.logging,
             vision,
+            extra_headers: None,
         })
     }
 
