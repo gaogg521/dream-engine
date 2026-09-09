@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use async_trait::async_trait;
 #[cfg(test)]
@@ -24,6 +24,11 @@ pub(crate) struct ComposedProvider {
     /// 0 = as configured, 1 = content[].thinking blocks, 2 = omit thinking,
     /// 3 = textualize tool replay.
     replay_level: Arc<AtomicU8>,
+    /// Sticky flag learned when a gateway rejects the legacy `max_tokens`
+    /// field for the configured model. Independent of `replay_level` — this
+    /// is a different failure mode (wrong field name, not an
+    /// unreplayable-thinking shape) with only two states, so a bool suffices.
+    max_completion_tokens_field: Arc<AtomicBool>,
 }
 
 const MAX_REPLAY_LEVEL: u8 = 3;
@@ -43,6 +48,7 @@ impl ComposedProvider {
             transport,
             compat,
             replay_level: Arc::new(AtomicU8::new(0)),
+            max_completion_tokens_field: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -68,6 +74,22 @@ impl ComposedProvider {
 fn is_thinking_replay_format_error(message: &str) -> bool {
     let lower = message.to_lowercase();
     lower.contains("content[].thinking") && lower.contains("passed back")
+}
+
+/// Some OpenAI-compatible gateways proxy to a backend model that requires the
+/// newer `max_completion_tokens` field name even though the gateway's own
+/// host isn't recognized as the official OpenAI endpoint (the only host
+/// `ProviderCompat::openai_official_defaults` covers automatically). Detect
+/// the upstream's own rejection message so `stream()` can retry once with the
+/// field renamed, instead of requiring a manual per-model compat override for
+/// every such gateway.
+fn is_unsupported_max_tokens_param_error(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    lower.contains("max_tokens")
+        && lower.contains("max_completion_tokens")
+        && (lower.contains("unsupported_parameter")
+            || lower.contains("unsupported parameter")
+            || lower.contains("not supported"))
 }
 
 impl ComposedProvider {
@@ -114,8 +136,12 @@ impl ComposedProvider {
 impl LlmProvider for ComposedProvider {
     async fn stream(&self, request: &LlmRequest) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
         let mut level = self.replay_level.load(Ordering::Relaxed);
+        let mut use_max_completion_tokens = self.max_completion_tokens_field.load(Ordering::Relaxed);
         loop {
-            let compat = compat_for_replay_level(&self.compat, level);
+            let mut compat = compat_for_replay_level(&self.compat, level);
+            if use_max_completion_tokens {
+                compat = compat.with_max_completion_tokens_field();
+            }
             match self.stream_with_compat(request, &compat).await {
                 Err(ProviderError::Api { message, .. })
                     if level < MAX_REPLAY_LEVEL && is_thinking_replay_format_error(&message) =>
@@ -127,11 +153,25 @@ impl LlmProvider for ComposedProvider {
                         "gateway rejected thinking/tool replay shape; escalating (1=content-block thinking, 2=omit thinking, 3=textualize tool history)"
                     );
                 }
+                Err(ProviderError::Api { message, .. })
+                    if !use_max_completion_tokens && is_unsupported_max_tokens_param_error(&message) =>
+                {
+                    use_max_completion_tokens = true;
+                    tracing::warn!(
+                        target: "dream_engine_providers",
+                        "gateway rejected legacy max_tokens field; retrying with max_completion_tokens"
+                    );
+                }
                 Ok(rx) => {
                     // Remember what worked so subsequent turns in this
-                    // session skip the shapes the gateway already rejected.
+                    // session skip the shapes/fields the gateway already
+                    // rejected.
                     if level != self.replay_level.load(Ordering::Relaxed) {
                         self.replay_level.store(level, Ordering::Relaxed);
+                    }
+                    if use_max_completion_tokens != self.max_completion_tokens_field.load(Ordering::Relaxed) {
+                        self.max_completion_tokens_field
+                            .store(use_max_completion_tokens, Ordering::Relaxed);
                     }
                     return Ok(rx);
                 }
