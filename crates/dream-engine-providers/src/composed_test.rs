@@ -554,6 +554,81 @@ mod tests {
         assert!(sticky_body.get("max_tokens").is_none());
     }
 
+    #[tokio::test]
+    async fn composed_provider_retries_against_responses_api_on_gateway_rejection_and_sticks() {
+        let server = MockServer::start().await;
+
+        // Real-world shape observed from a third-party OpenAI-compatible
+        // gateway that only supports reasoning_effort + function tools on
+        // the Responses API.
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_raw(
+                r#"{"error":{"message":"Function tools with reasoning_effort are not supported for test-model in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.","type":"invalid_request_error","param":"reasoning_effort","code":null}}"#,
+                "application/json",
+            ))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        let responses_sse = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+        );
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(responses_sse, "text/event-stream"))
+            .mount(&server)
+            .await;
+
+        let provider = ComposedProvider::new(
+            ProviderTransport::OpenAi(OpenAiTransport::new("test-key", &server.uri())),
+            ProviderCompat::openai_defaults(),
+        );
+
+        let mut rx = provider
+            .stream(&test_request())
+            .await
+            .expect("stream should succeed after retrying against /responses");
+        assert!(matches!(
+            rx.recv().await,
+            Some(LlmEvent::TextDelta(text)) if text == "ok"
+        ));
+
+        let received = server.received_requests().await.expect("wiremock records requests");
+        assert_eq!(
+            received.len(),
+            2,
+            "should send the original /chat/completions request then exactly one /responses retry"
+        );
+        assert!(received[0].url.path().ends_with("/chat/completions"));
+        assert!(received[1].url.path().ends_with("/responses"));
+
+        let retried_body: serde_json::Value = received[1].body_json().expect("retry body is valid json");
+        assert!(
+            retried_body.get("input").is_some(),
+            "Responses body uses `input`: {retried_body}"
+        );
+        assert!(
+            retried_body.get("messages").is_none(),
+            "Responses body must not carry `messages`: {retried_body}"
+        );
+
+        // Second turn on the same provider instance must go straight to
+        // /responses — exactly one more request, no re-probing.
+        let mut rx2 = provider
+            .stream(&test_request())
+            .await
+            .expect("second stream should succeed immediately");
+        assert!(matches!(
+            rx2.recv().await,
+            Some(LlmEvent::TextDelta(text)) if text == "ok"
+        ));
+        let received = server.received_requests().await.expect("wiremock records requests");
+        assert_eq!(received.len(), 3, "sticky mode: second turn sends exactly one request");
+        assert!(received[2].url.path().ends_with("/responses"));
+    }
+
     /// Multi-turn tool-call history for the escalation tests below.
     fn tool_history_request() -> LlmRequest {
         golden_req(

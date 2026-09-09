@@ -730,6 +730,25 @@ strip_patterns = ["__REASONING__"]
     }
 
     #[test]
+    fn test_with_responses_api_overrides_chat_completions_default() {
+        let compat = ProviderCompat::openai_defaults();
+        assert_eq!(compat.openai_api_mode(), OpenAiApiMode::ChatCompletions);
+        assert_eq!(compat.openai_api_path(), "/chat/completions");
+
+        let retried = compat.with_responses_api();
+        assert_eq!(retried.openai_api_mode(), OpenAiApiMode::Responses);
+        assert_eq!(retried.openai_api_path(), "/responses");
+
+        // Everything else is untouched — this is a single-field patch, not a
+        // different preset.
+        assert_eq!(retried.max_tokens_field(), compat.max_tokens_field());
+        assert_eq!(
+            retried.messages.merge_assistant_messages,
+            compat.messages.merge_assistant_messages
+        );
+    }
+
+    #[test]
     fn test_user_override_beats_openai_official_defaults() {
         let user = ProviderCompat {
             transport: TransportCompat {

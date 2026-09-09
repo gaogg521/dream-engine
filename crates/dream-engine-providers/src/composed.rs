@@ -29,6 +29,11 @@ pub(crate) struct ComposedProvider {
     /// is a different failure mode (wrong field name, not an
     /// unreplayable-thinking shape) with only two states, so a bool suffices.
     max_completion_tokens_field: Arc<AtomicBool>,
+    /// Sticky flag learned when a gateway rejects `reasoning_effort` combined
+    /// with function tools on `/chat/completions` and requires `/responses`
+    /// instead. Independent of the other two flags — a third, unrelated
+    /// failure mode with only two states.
+    responses_api: Arc<AtomicBool>,
 }
 
 const MAX_REPLAY_LEVEL: u8 = 3;
@@ -49,6 +54,7 @@ impl ComposedProvider {
             compat,
             replay_level: Arc::new(AtomicU8::new(0)),
             max_completion_tokens_field: Arc::new(AtomicBool::new(false)),
+            responses_api: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -90,6 +96,19 @@ fn is_unsupported_max_tokens_param_error(message: &str) -> bool {
         && (lower.contains("unsupported_parameter")
             || lower.contains("unsupported parameter")
             || lower.contains("not supported"))
+}
+
+/// Some OpenAI-compatible gateways reject `reasoning_effort` combined with
+/// function tools on `/chat/completions` (observed: "Function tools with
+/// reasoning_effort are not supported for <model> in /v1/chat/completions. To
+/// use function tools, use /v1/responses or set reasoning_effort to
+/// 'none'."), even though the same underlying model works fine on other
+/// gateways. Detect that rejection so `stream()` can retry once against
+/// `/responses` — the same wire format already selected automatically for
+/// known Responses-only models.
+fn is_reasoning_effort_tools_unsupported_error(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    lower.contains("reasoning_effort") && lower.contains("function tools") && lower.contains("responses")
 }
 
 impl ComposedProvider {
@@ -137,10 +156,14 @@ impl LlmProvider for ComposedProvider {
     async fn stream(&self, request: &LlmRequest) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
         let mut level = self.replay_level.load(Ordering::Relaxed);
         let mut use_max_completion_tokens = self.max_completion_tokens_field.load(Ordering::Relaxed);
+        let mut use_responses_api = self.responses_api.load(Ordering::Relaxed);
         loop {
             let mut compat = compat_for_replay_level(&self.compat, level);
             if use_max_completion_tokens {
                 compat = compat.with_max_completion_tokens_field();
+            }
+            if use_responses_api {
+                compat = compat.with_responses_api();
             }
             match self.stream_with_compat(request, &compat).await {
                 Err(ProviderError::Api { message, .. })
@@ -162,6 +185,15 @@ impl LlmProvider for ComposedProvider {
                         "gateway rejected legacy max_tokens field; retrying with max_completion_tokens"
                     );
                 }
+                Err(ProviderError::Api { message, .. })
+                    if !use_responses_api && is_reasoning_effort_tools_unsupported_error(&message) =>
+                {
+                    use_responses_api = true;
+                    tracing::warn!(
+                        target: "dream_engine_providers",
+                        "gateway rejected reasoning_effort with function tools on /chat/completions; retrying against /responses"
+                    );
+                }
                 Ok(rx) => {
                     // Remember what worked so subsequent turns in this
                     // session skip the shapes/fields the gateway already
@@ -172,6 +204,9 @@ impl LlmProvider for ComposedProvider {
                     if use_max_completion_tokens != self.max_completion_tokens_field.load(Ordering::Relaxed) {
                         self.max_completion_tokens_field
                             .store(use_max_completion_tokens, Ordering::Relaxed);
+                    }
+                    if use_responses_api != self.responses_api.load(Ordering::Relaxed) {
+                        self.responses_api.store(use_responses_api, Ordering::Relaxed);
                     }
                     return Ok(rx);
                 }
