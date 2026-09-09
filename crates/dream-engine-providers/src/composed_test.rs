@@ -480,6 +480,80 @@ mod tests {
         assert_eq!(content[0]["thinking"], "reasoning...");
     }
 
+    #[tokio::test]
+    async fn composed_provider_retries_with_max_completion_tokens_on_gateway_rejection_and_sticks() {
+        let server = MockServer::start().await;
+
+        // Real-world shape observed from a third-party OpenAI-compatible
+        // gateway fronting a backend model that migrated off `max_tokens`.
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_raw(
+                r#"{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.","type":"invalid_request_error","param":"max_tokens","code":"unsupported_parameter"}}"#,
+                "application/json",
+            ))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+                    "data: [DONE]\n\n"
+                ),
+                "text/event-stream",
+            ))
+            .mount(&server)
+            .await;
+
+        let provider = ComposedProvider::new(
+            ProviderTransport::OpenAi(OpenAiTransport::new("test-key", &server.uri())),
+            ProviderCompat::openai_defaults(),
+        );
+
+        let mut rx = provider
+            .stream(&test_request())
+            .await
+            .expect("stream should succeed after retrying with the renamed field");
+        assert!(matches!(
+            rx.recv().await,
+            Some(LlmEvent::TextDelta(text)) if text == "ok"
+        ));
+
+        let received = server.received_requests().await.expect("wiremock records requests");
+        assert_eq!(
+            received.len(),
+            2,
+            "should send the original request then exactly one retry"
+        );
+
+        let original_body: serde_json::Value = received[0].body_json().expect("original body is valid json");
+        assert_eq!(original_body["max_tokens"], 8192);
+        assert!(original_body.get("max_completion_tokens").is_none());
+
+        let retried_body: serde_json::Value = received[1].body_json().expect("retry body is valid json");
+        assert_eq!(retried_body["max_completion_tokens"], 8192);
+        assert!(retried_body.get("max_tokens").is_none());
+
+        // Second turn on the same provider instance must go straight to the
+        // learned field name — exactly one more request, no re-probing.
+        let mut rx2 = provider
+            .stream(&test_request())
+            .await
+            .expect("second stream should succeed immediately");
+        assert!(matches!(
+            rx2.recv().await,
+            Some(LlmEvent::TextDelta(text)) if text == "ok"
+        ));
+        let received = server.received_requests().await.expect("wiremock records requests");
+        assert_eq!(received.len(), 3, "sticky field: second turn sends exactly one request");
+        let sticky_body: serde_json::Value = received[2].body_json().expect("sticky body is valid json");
+        assert_eq!(sticky_body["max_completion_tokens"], 8192);
+        assert!(sticky_body.get("max_tokens").is_none());
+    }
+
     /// Multi-turn tool-call history for the escalation tests below.
     fn tool_history_request() -> LlmRequest {
         golden_req(

@@ -631,6 +631,18 @@ impl ProviderCompat {
         next.reasoning.textualize_tool_replay = Some(true);
         next
     }
+
+    /// Return a copy of this compat with the OpenAI max-tokens field switched
+    /// to `max_completion_tokens`. Used for the automatic retry in
+    /// `composed.rs` when a gateway rejects the legacy `max_tokens` field for
+    /// a specific backend model even though the gateway's own host isn't the
+    /// official OpenAI endpoint (the only host [`openai_official_defaults`](Self::openai_official_defaults)
+    /// covers automatically).
+    pub fn with_max_completion_tokens_field(&self) -> Self {
+        let mut next = self.clone();
+        next.transport.max_tokens_field = Some("max_completion_tokens".to_owned());
+        next
+    }
 }
 
 fn normalize_model_pattern(value: &str) -> String {

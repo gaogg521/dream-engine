@@ -712,6 +712,24 @@ strip_patterns = ["__REASONING__"]
     }
 
     #[test]
+    fn test_with_max_completion_tokens_field_overrides_legacy_default() {
+        let compat = ProviderCompat::openai_defaults();
+        assert_eq!(compat.max_tokens_field(), "max_tokens");
+
+        let retried = compat.with_max_completion_tokens_field();
+        assert_eq!(retried.max_tokens_field(), "max_completion_tokens");
+
+        // Everything else is untouched — this is a single-field patch, not a
+        // different preset.
+        assert_eq!(retried.transport.api_path, compat.transport.api_path);
+        assert_eq!(
+            retried.messages.merge_assistant_messages,
+            compat.messages.merge_assistant_messages
+        );
+        assert_eq!(retried.reasoning.supports_effort, compat.reasoning.supports_effort);
+    }
+
+    #[test]
     fn test_user_override_beats_openai_official_defaults() {
         let user = ProviderCompat {
             transport: TransportCompat {
