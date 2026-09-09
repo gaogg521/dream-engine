@@ -643,6 +643,18 @@ impl ProviderCompat {
         next.transport.max_tokens_field = Some("max_completion_tokens".to_owned());
         next
     }
+
+    /// Return a copy of this compat with the OpenAI wire API switched to
+    /// Responses. Used for the automatic retry in `composed.rs` when a
+    /// gateway rejects `reasoning_effort` combined with function tools on
+    /// `/chat/completions` and requires `/responses` instead (the same wire
+    /// format already selected by default for known Responses-only models
+    /// such as `gpt-5.6`).
+    pub fn with_responses_api(&self) -> Self {
+        let mut next = self.clone();
+        next.transport.openai_api_mode = Some(OpenAiApiMode::Responses);
+        next
+    }
 }
 
 fn normalize_model_pattern(value: &str) -> String {
