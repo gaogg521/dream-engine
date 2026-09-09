@@ -56,14 +56,14 @@ mod tests {
 
     #[test]
     fn test_get_char_budget_200k_tokens() {
-        // 200_000 * 4 * 0.01 = 8_000
-        assert_eq!(get_char_budget(Some(200_000)), 8_000);
+        // 200_000 * 4 * 0.02 = 16_000
+        assert_eq!(get_char_budget(Some(200_000)), 16_000);
     }
 
     #[test]
     fn test_get_char_budget_small_window() {
-        // 100 * 4 * 0.01 = 4
-        assert_eq!(get_char_budget(Some(100)), 4);
+        // 100 * 4 * 0.02 = 8
+        assert_eq!(get_char_budget(Some(100)), 8);
     }
 
     #[test]
@@ -73,8 +73,8 @@ mod tests {
 
     #[test]
     fn test_get_char_budget_large_window() {
-        // 1_000_000 * 4 * 0.01 = 40_000
-        assert_eq!(get_char_budget(Some(1_000_000)), 40_000);
+        // 1_000_000 * 4 * 0.02 = 80_000
+        assert_eq!(get_char_budget(Some(1_000_000)), 80_000);
     }
 
     // --- format_skill_description ---
