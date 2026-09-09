@@ -2,10 +2,17 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::types::{SkillMetadata, SkillSource};
 
-// Skill listing gets 1% of the context window (in characters)
-pub const SKILL_BUDGET_CONTEXT_PERCENT: f64 = 0.01;
+// Skill listing gets 2% of the context window (in characters).
+//
+// Raised from 1% when imported skill catalogs arrived in the 100+ range: at
+// 1% a 200k window gives each of ~115 non-bundled skills ~50 display columns
+// (~25 CJK chars) of description, and smaller windows degrade to names only —
+// thin enough that trigger matching misses. 2% keeps the full function
+// sentence readable at 200k (16k columns ≈ 120+ columns per skill) while the
+// three-level degradation still protects small windows.
+pub const SKILL_BUDGET_CONTEXT_PERCENT: f64 = 0.02;
 pub const CHARS_PER_TOKEN: usize = 4;
-pub const DEFAULT_CHAR_BUDGET: usize = 8_000; // Fallback: 1% of 200k × 4
+pub const DEFAULT_CHAR_BUDGET: usize = 16_000; // Fallback: 2% of 200k × 4
 pub const MAX_LISTING_DESC_CHARS: usize = 250;
 
 const MIN_DESC_LENGTH: usize = 20;
