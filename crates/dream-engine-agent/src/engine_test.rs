@@ -917,6 +917,67 @@ mod tests_compact {
         output
     }
 
+    /// A sink that records only what a live context meter needs.
+    struct UsageProgressOutput {
+        progress: Mutex<Vec<(u64, u64, u64)>>,
+    }
+
+    impl OutputSink for UsageProgressOutput {
+        fn emit_text_delta(&self, _: &str, _: &str) {}
+        fn emit_thinking(&self, _: &str, _: &str) {}
+        fn emit_tool_call(&self, _: &str, _: &str, _: &str) {}
+        fn emit_tool_result(&self, _: &str, _: &str, _: bool, _: &str) {}
+        fn emit_stream_start(&self, _: &str) {}
+        fn emit_stream_end(&self, _: &str, _: usize, _: u64, _: u64, _: u64, _: u64) {}
+        fn emit_usage_progress(&self, context_usage: u64, context_window: u64, cumulative: &TokenUsage) {
+            self.progress
+                .lock()
+                .unwrap()
+                .push((context_usage, context_window, cumulative.output_tokens));
+        }
+        fn emit_error(&self, _: &str) {}
+        fn emit_info(&self, _: &str) {}
+    }
+
+    /// Usage must reach the host DURING the turn, once per model response.
+    ///
+    /// `emit_stream_end` carries the same numbers but is called once, by the
+    /// CLI, after `run()` returns — so a host that embeds the engine and
+    /// drives a live context meter had nothing to show for the length of an
+    /// agentic turn, and nothing at all for a turn the user cancelled.
+    #[test]
+    fn usage_progress_reaches_the_sink_on_every_response() {
+        let output = Arc::new(UsageProgressOutput {
+            progress: Mutex::new(Vec::new()),
+        });
+        let mut engine =
+            make_compact_engine_with_output(CompactConfig::default(), CompactState::new(), vec![], output.clone());
+
+        engine.record_turn_usage(&TokenUsage {
+            input_tokens: 10_000,
+            output_tokens: 100,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+        });
+        engine.record_turn_usage(&TokenUsage {
+            input_tokens: 12_000,
+            output_tokens: 250,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+        });
+
+        let seen = output.progress.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "one report per response, not one per turn: {seen:?}");
+
+        // Context position is the provider's own number for that response;
+        // the token total is cumulative across the session so far.
+        assert_eq!(seen[0].0, 10_100);
+        assert_eq!(seen[1].0, 12_250);
+        assert_eq!(seen[0].2, 100);
+        assert_eq!(seen[1].2, 350, "cumulative, not per-response");
+        assert!(seen[0].1 > 0, "a window is required or no percentage can be shown");
+    }
+
     #[test]
     fn cache_full_miss_never_emits_a_terminal_error() {
         for cache_diagnostics in [false, true] {
