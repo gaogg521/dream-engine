@@ -68,8 +68,15 @@ pub fn create_provider(config: &Config) -> Arc<dyn LlmProvider> {
             let credentials = bedrock::credentials_from_config(&bc);
             let (base_url, bearer_token) = endpoint_override(&config.base_url, &config.api_key);
             Arc::new(
-                bedrock::BedrockProvider::new(&region, credentials, config.prompt_caching, compat, base_url, bearer_token)
-                    .with_extra_headers(extra_headers),
+                bedrock::BedrockProvider::new(
+                    &region,
+                    credentials,
+                    config.prompt_caching,
+                    compat,
+                    base_url,
+                    bearer_token,
+                )
+                .with_extra_headers(extra_headers),
             )
         }
         ProviderType::Vertex => {
