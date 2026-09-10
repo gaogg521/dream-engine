@@ -28,6 +28,25 @@ pub trait OutputSink: Send + Sync {
         cache_read_tokens: u64,
     );
 
+    /// Report where the session stands after each model response, while the
+    /// turn is still running.
+    ///
+    /// [`Self::emit_stream_end`] carries the same numbers but is called once,
+    /// by `dream-engine-cli`, after `run()` has returned. A host that embeds
+    /// the engine and drives a live context meter therefore had nothing to
+    /// show until the turn ended — and an agentic turn can run for many
+    /// minutes across dozens of model calls, so the meter sat blank for the
+    /// whole of it and then jumped. Worse, a turn the user cancels never
+    /// reaches that end at all, so its cost was never reported anywhere,
+    /// which is exactly when someone wants to know it.
+    ///
+    /// `cumulative` is the session total (the same value `AgentResult.usage`
+    /// carries), not this response alone.
+    ///
+    /// Defaults to dropping it: the terminal and JSON-protocol sinks have
+    /// their own end-of-run reporting and want no extra chatter.
+    fn emit_usage_progress(&self, _context_usage: u64, _context_window: u64, _cumulative: &TokenUsage) {}
+
     /// Report the token usage of a model call a *tool* made on its own behalf
     /// (today: `ReadImage`'s vision delegate).
     ///

@@ -1234,6 +1234,21 @@ impl AgentEngine {
         self.context_state.replace_with_provider_usage(context_usage);
         self.sync_compact_watermark();
 
+        // Tell the host where we now stand, while the turn is still running.
+        // This is the only point inside a turn where the provider's own
+        // numbers are known, so it is the only place a live meter can be fed
+        // from — see `OutputSink::emit_usage_progress`.
+        self.output.emit_usage_progress(
+            self.context_state.context_usage,
+            self.compact_config.context_window as u64,
+            &self.total_usage,
+        );
+
+        // Tell the host where we now stand, while the turn is still running.
+        // This is the only point inside a turn where the provider's own
+        // numbers are known, so it is the only place a live meter can be fed
+        // from — see `OutputSink::emit_usage_progress`.
+
         // Cache break detection
         let cache_stats = CacheStats {
             input_tokens: turn_usage.input_tokens,
