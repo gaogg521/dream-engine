@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.3.0](https://github.com/gaogg521/dream-engine/compare/v0.2.11...v0.3.0) (2026-09-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **providers:** BedrockProvider::new and VertexProvider::new gained two trailing parameters (base_url, bearer_token). The only non-test call site is create_provider in this crate.
+
+### Features
+
+* **agent:** let a host veto tool calls in every approval mode ([3247bc4](https://github.com/gaogg521/dream-engine/commit/3247bc44a04d2f79937b4f72647ac4a51ee60072))
+* **agent:** report usage while the turn is still running ([6b68bb7](https://github.com/gaogg521/dream-engine/commit/6b68bb7b9d9004516e4b39d69b5637a154f1f42c))
+* **providers,config:** session extra_headers on every LLM transport ([75f538f](https://github.com/gaogg521/dream-engine/commit/75f538f87c9f1297854363faf501c941f0f5fe2c))
+* **providers:** add Ollama local OpenAI-compatible provider ([c69f579](https://github.com/gaogg521/dream-engine/commit/c69f579670752acc545a54c104ac7374aeeeb140))
+* **providers:** route Bedrock and Vertex through a configurable base_url ([f51a633](https://github.com/gaogg521/dream-engine/commit/f51a6338ce2fdb8dcf7aede96ca7c6c0ba6bedc1))
+* **providers:** suppress default thinking for reason-by-default models ([#1](https://github.com/gaogg521/dream-engine/issues/1)) ([f4e9f1f](https://github.com/gaogg521/dream-engine/commit/f4e9f1fbafb831809dbc10e5c5cba7ef866ad8c6))
+* **skills:** raise the skill-listing budget to 2% of the context window ([40adebf](https://github.com/gaogg521/dream-engine/commit/40adebf4b59c5c76e678b6ee83c62313e74851a6))
+
+
+### Bug Fixes
+
+* **engine:** stop surfacing routine prompt-cache misses to end users ([#2](https://github.com/gaogg521/dream-engine/issues/2)) ([d321217](https://github.com/gaogg521/dream-engine/commit/d321217dddc92ce60be95f53699e817785c21928))
+* **mcp:** clear the two clippy errors that were failing CI behind the fmt one ([53be696](https://github.com/gaogg521/dream-engine/commit/53be6967b84db41c126a3940fdbcde1aa1dfef18))
+* **providers:** auto-retry against /responses when a gateway rejects reasoning_effort with tools ([59ff097](https://github.com/gaogg521/dream-engine/commit/59ff09707ebd3aae6287eb63a6c5d582c9c5ae46))
+* **providers:** auto-retry with max_completion_tokens on legacy field rejection ([f394fc1](https://github.com/gaogg521/dream-engine/commit/f394fc1c062ad4cc220851aaab429ae2043f7ee9))
+* **providers:** give the HTTP client a read timeout ([fb0b0b5](https://github.com/gaogg521/dream-engine/commit/fb0b0b54e68e9ba262f1b30d443367871a95be4a))
+* **windows:** don't flash a console window for every child process ([#3](https://github.com/gaogg521/dream-engine/issues/3)) ([e689517](https://github.com/gaogg521/dream-engine/commit/e689517a9b1d961b4fc1257adc0898695db133c9))
+
+
+### Code Refactoring
+
+* **protocol:** name the host veto ToolCallGuard and make it async ([2169adf](https://github.com/gaogg521/dream-engine/commit/2169adf3582de785859760480694247a35ada808))
+
 ## [0.2.11](https://github.com/iOfficeAI/aionrs/compare/v0.2.10...v0.2.11) (2026-08-13)
 
 
