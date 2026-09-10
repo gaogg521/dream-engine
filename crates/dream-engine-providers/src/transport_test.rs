@@ -768,8 +768,8 @@ mod tests {
         let mut extra = HeaderMap::new();
         extra.insert("x-dream-conversation-id", HeaderValue::from_static("conv-123"));
         extra.insert("authorization", HeaderValue::from_static("Bearer SNEAKY"));
-        let transport = ProviderTransport::OpenAi(OpenAiTransport::new("test-key", &server.uri()))
-            .with_extra_headers(extra);
+        let transport =
+            ProviderTransport::OpenAi(OpenAiTransport::new("test-key", &server.uri())).with_extra_headers(extra);
         let compat = ProviderCompat::openai_defaults();
         let (body, tool_wire_shape) = transport
             .project_body(&test_request(vec![]), &compat)
@@ -806,7 +806,12 @@ mod tests {
             .project_body(&test_request(vec![]), &ProviderCompat::anthropic_defaults())
             .expect("request body projection should succeed");
         let request = transport
-            .build_projected_request("test-model", body, &ProviderCompat::anthropic_defaults(), tool_wire_shape)
+            .build_projected_request(
+                "test-model",
+                body,
+                &ProviderCompat::anthropic_defaults(),
+                tool_wire_shape,
+            )
             .expect("projected request should build");
 
         transport
