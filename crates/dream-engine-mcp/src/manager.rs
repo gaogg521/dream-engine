@@ -41,6 +41,15 @@ struct McpServer {
 }
 
 /// Manages connections to multiple MCP servers
+/// One pre-populated server for [`McpManager::new_for_test_with_tools`]:
+/// name, whether it advertises resources, its tool list, and its transport.
+///
+/// Named rather than written inline because the tuple is wide enough that
+/// clippy's `type_complexity` refuses it, and a reader gets no help from four
+/// anonymous positions either.
+#[cfg(any(test, feature = "test-utils"))]
+pub type TestServerEntry<'a> = (&'a str, bool, Vec<McpToolDef>, Box<dyn super::transport::McpTransport>);
+
 pub struct McpManager {
     servers: HashMap<String, McpServer>,
     /// Monotonically increasing request ID counter for all JSON-RPC calls
@@ -383,9 +392,7 @@ impl McpManager {
     /// that exercise tool-registration logic (e.g. schema-compatibility
     /// filtering) without a live handshake.
     #[cfg(any(test, feature = "test-utils"))]
-    pub fn new_for_test_with_tools(
-        entries: Vec<(&str, bool, Vec<McpToolDef>, Box<dyn super::transport::McpTransport>)>,
-    ) -> Self {
+    pub fn new_for_test_with_tools(entries: Vec<TestServerEntry<'_>>) -> Self {
         let mut servers = HashMap::new();
         for (name, supports_resources, tools, transport) in entries {
             servers.insert(

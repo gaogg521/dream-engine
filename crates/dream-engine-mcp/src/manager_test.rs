@@ -185,11 +185,15 @@ mod tests {
             Duration::from_millis(DEFAULT_STARTUP_TIMEOUT_MS),
             "connect_all should give up at the default deadline, not wait out the server"
         );
-        assert!(
-            DEFAULT_STARTUP_TIMEOUT_MS <= 20_000,
-            "this is the worst-case wait before a session becomes usable; raising it \
-             past ~20s reintroduces the stall this bound exists to cap"
-        );
+        // Checked at compile time rather than here. Both sides are constants,
+        // so as a runtime assertion this never actually tested anything —
+        // which is what clippy's `assertions_on_constants` is pointing at. The
+        // intent (stop someone quietly raising the bound) is better served by
+        // refusing to build at all.
+        //
+        // This is the worst-case wait before a session becomes usable; raising
+        // it past ~20s reintroduces the stall the bound exists to cap.
+        const _: () = assert!(DEFAULT_STARTUP_TIMEOUT_MS <= 20_000);
     }
 
     // -----------------------------------------------------------------------
