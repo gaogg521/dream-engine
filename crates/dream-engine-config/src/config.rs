@@ -292,6 +292,9 @@ pub struct Config {
     /// A vision-capable model the agent can delegate image reading to when the
     /// main model itself cannot accept image input. See [`VisionModelConfig`].
     pub vision: Option<VisionModelConfig>,
+    /// An on-device OCR command `ReadImage` runs before the vision model when
+    /// text is what was asked for. See [`LocalOcrConfig`].
+    pub local_ocr: Option<LocalOcrConfig>,
     /// Headers sent with every upstream LLM request (C1-4 cost attribution:
     /// the enterprise host injects `x-dream-conversation-id` here for
     /// company-channel sessions so the model proxy can attribute usage).
@@ -337,6 +340,25 @@ impl VisionModelConfig {
             compat: config.compat.clone(),
         }
     }
+}
+
+/// An on-device OCR command used to transcribe an image without a network call.
+///
+/// The host supplies the whole command because each platform's OCR entry point
+/// differs — PowerShell against `Windows.Media.Ocr`, `swift` against Apple's
+/// Vision framework, a wrapper around `tesseract`. Resolving that here would
+/// put platform detection in the engine; the host already knows which platform
+/// it is on and where the bundled scripts live.
+///
+/// The image path is appended as the final argument, and passed as an argument
+/// rather than through a shell, so a path with spaces or metacharacters cannot
+/// become a second command.
+#[derive(Debug, Clone)]
+pub struct LocalOcrConfig {
+    pub program: String,
+    pub args: Vec<String>,
+    /// Shown to the user as what read their image, e.g. "Windows.Media.Ocr".
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -457,6 +479,9 @@ impl Config {
         let compat = ProviderCompat::merge(compat_defaults, user_compat);
         let thinking = resolve_cli_thinking(cli.thinking.as_deref(), cli.thinking_budget)?;
         let vision = resolve_vision_model(&merged.providers);
+        // Only an embedding host knows where the bundled OCR scripts are and
+        // which platform it is on, so the CLI never resolves one.
+        let local_ocr = None;
 
         Ok(Config {
             provider_label,
@@ -484,6 +509,7 @@ impl Config {
             mcp: merged.mcp,
             logging: merged.logging,
             vision,
+            local_ocr,
             extra_headers: None,
         })
     }

@@ -14,7 +14,7 @@ use dream_engine_types::llm::{LlmEvent, LlmRequest};
 use dream_engine_types::message::{ContentBlock, StopReason, TokenUsage};
 use dream_engine_types::usage::DelegateUsageSink;
 
-use super::{ReadImageTool, VisionBackend};
+use super::{LocalOcrBackend, ReadImageTool, VisionBackend};
 use crate::Tool;
 
 /// A stand-in vision model: records the request it was given and replays a
@@ -378,4 +378,168 @@ async fn ignores_a_blank_host_supplied_reason() {
     let result = tool.execute(json!({ "file_path": path })).await;
 
     assert!(result.content.contains("Settings -> Models"));
+}
+
+// ---------------------------------------------------------------------------
+// Local OCR
+//
+// The command is a real subprocess, so these exercise the actual spawn, exit
+// status and stdout handling rather than a mocked backend.
+// ---------------------------------------------------------------------------
+
+/// An OCR command that prints `text` and succeeds. The image path is appended
+/// by the backend and lands in the output too, which is harmless here.
+fn ocr_printing(text: &str) -> LocalOcrBackend {
+    if cfg!(windows) {
+        LocalOcrBackend::new(
+            "cmd",
+            vec!["/C".to_owned(), "echo".to_owned(), text.to_owned()],
+            "Test OCR",
+        )
+    } else {
+        LocalOcrBackend::new("/bin/echo", vec![text.to_owned()], "Test OCR")
+    }
+}
+
+/// An OCR command that succeeds with no output — an image with no text in it.
+fn ocr_finding_nothing() -> LocalOcrBackend {
+    if cfg!(windows) {
+        LocalOcrBackend::new(
+            "cmd",
+            vec!["/C".to_owned(), "exit".to_owned(), "0".to_owned()],
+            "Test OCR",
+        )
+    } else {
+        LocalOcrBackend::new("/bin/true", Vec::new(), "Test OCR")
+    }
+}
+
+/// The point of the whole feature: a screenshot is transcribed on this machine
+/// and the paid vision model is never called.
+#[tokio::test]
+async fn text_mode_answers_from_local_ocr_without_calling_the_vision_model() {
+    let directory = TempDir::new().expect("temp dir");
+    let path = write_png(&directory);
+    let provider = Arc::new(ScriptedVisionProvider::replying("should never be reached"));
+    let requests = provider.requests.clone();
+    let tool = ReadImageTool::new(
+        "deepseek-v4-flash",
+        Some(VisionBackend::new(provider, "gpt-4o", "openai")),
+    )
+    .with_local_ocr(Some(ocr_printing("Invoice 2026-0042 total 1,280.00 CNY")));
+
+    let result = tool.execute(json!({ "file_path": path })).await;
+
+    assert!(!result.is_error, "{}", result.content);
+    assert!(result.content.contains("Invoice 2026-0042"), "{}", result.content);
+    assert!(result.content.contains("Test OCR"));
+    assert!(
+        requests.lock().unwrap().is_empty(),
+        "the vision model was called even though local OCR answered"
+    );
+    // The agent must know this says nothing about anything non-textual, and
+    // how to get that if the question needs it.
+    assert!(result.content.contains("mode=\"visual\""), "{}", result.content);
+}
+
+/// An image with no text in it is not an OCR question. Falling through keeps
+/// the previous behaviour instead of answering with nothing.
+#[tokio::test]
+async fn falls_back_to_the_vision_model_when_local_ocr_finds_no_text() {
+    let directory = TempDir::new().expect("temp dir");
+    let path = write_png(&directory);
+    let provider = Arc::new(ScriptedVisionProvider::replying("A dog on a beach at sunset."));
+    let requests = provider.requests.clone();
+    let tool = ReadImageTool::new(
+        "deepseek-v4-flash",
+        Some(VisionBackend::new(provider, "gpt-4o", "openai")),
+    )
+    .with_local_ocr(Some(ocr_finding_nothing()));
+
+    let result = tool.execute(json!({ "file_path": path })).await;
+
+    assert!(!result.is_error, "{}", result.content);
+    assert!(result.content.contains("A dog on a beach at sunset."));
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+/// A missing OCR engine must degrade to the old behaviour, not fail the read.
+#[tokio::test]
+async fn falls_back_to_the_vision_model_when_the_ocr_command_cannot_run() {
+    let directory = TempDir::new().expect("temp dir");
+    let path = write_png(&directory);
+    let provider = Arc::new(ScriptedVisionProvider::replying("A dog on a beach at sunset."));
+    let requests = provider.requests.clone();
+    let tool = ReadImageTool::new(
+        "deepseek-v4-flash",
+        Some(VisionBackend::new(provider, "gpt-4o", "openai")),
+    )
+    .with_local_ocr(Some(LocalOcrBackend::new(
+        "dream-no-such-ocr-binary-exists",
+        Vec::new(),
+        "Test OCR",
+    )));
+
+    let result = tool.execute(json!({ "file_path": path })).await;
+
+    assert!(!result.is_error, "{}", result.content);
+    assert!(result.content.contains("A dog on a beach at sunset."));
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+/// OCR cannot answer "what is in this picture", so asking for a visual reading
+/// must not be intercepted by it.
+#[tokio::test]
+async fn visual_mode_skips_local_ocr_entirely() {
+    let directory = TempDir::new().expect("temp dir");
+    let path = write_png(&directory);
+    let provider = Arc::new(ScriptedVisionProvider::replying("A dog on a beach at sunset."));
+    let requests = provider.requests.clone();
+    let tool = ReadImageTool::new(
+        "deepseek-v4-flash",
+        Some(VisionBackend::new(provider, "gpt-4o", "openai")),
+    )
+    .with_local_ocr(Some(ocr_printing("Invoice 2026-0042 total 1,280.00 CNY")));
+
+    let result = tool.execute(json!({ "file_path": path, "mode": "visual" })).await;
+
+    assert!(!result.is_error, "{}", result.content);
+    assert!(result.content.contains("A dog on a beach at sunset."));
+    assert!(!result.content.contains("Invoice 2026-0042"));
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+/// With no vision model at all, local OCR is the only reader — and for a
+/// screenshot it is a sufficient one. This is the case that used to report the
+/// image as unreadable.
+#[tokio::test]
+async fn local_ocr_answers_even_with_no_vision_model_configured() {
+    let directory = TempDir::new().expect("temp dir");
+    let path = write_png(&directory);
+    let tool = ReadImageTool::new("deepseek-v4-flash", None)
+        .with_local_ocr(Some(ocr_printing("Error CS1002: ; expected at line 42")));
+
+    let result = tool.execute(json!({ "file_path": path })).await;
+
+    assert!(!result.is_error, "{}", result.content);
+    assert!(result.content.contains("Error CS1002"), "{}", result.content);
+}
+
+/// Without a backend the tool behaves exactly as it did before.
+#[tokio::test]
+async fn no_local_ocr_backend_leaves_the_vision_path_untouched() {
+    let directory = TempDir::new().expect("temp dir");
+    let path = write_png(&directory);
+    let provider = Arc::new(ScriptedVisionProvider::replying("A dog on a beach at sunset."));
+    let requests = provider.requests.clone();
+    let tool = ReadImageTool::new(
+        "deepseek-v4-flash",
+        Some(VisionBackend::new(provider, "gpt-4o", "openai")),
+    )
+    .with_local_ocr(None);
+
+    let result = tool.execute(json!({ "file_path": path })).await;
+
+    assert!(result.content.contains("A dog on a beach at sunset."));
+    assert_eq!(requests.lock().unwrap().len(), 1);
 }

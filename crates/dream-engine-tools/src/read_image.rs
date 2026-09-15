@@ -12,9 +12,12 @@
 //! the main model, so it stays in the tool list for every model.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio::process::Command;
+use tokio::time::timeout;
 use tracing::{debug, warn};
 
 use dream_engine_protocol::events::ToolCategory;
@@ -58,11 +61,110 @@ impl VisionBackend {
     }
 }
 
+/// How long one local OCR run may take before it is abandoned for the vision
+/// model. The engines behind it are on-device and finish in well under a
+/// second; a minute means something is wrong, not slow.
+const LOCAL_OCR_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Below this many characters, a transcription is treated as "this image is not
+/// mainly text" and the vision model answers instead. A photograph routinely
+/// yields a few stray characters from a sign or a watermark, and returning
+/// those as the answer would be worse than useless.
+const MIN_USEFUL_OCR_CHARS: usize = 16;
+
+/// An on-device OCR command that extracts text from an image without a network
+/// call.
+///
+/// The caller supplies the whole command. Each platform's OCR entry point is
+/// different — PowerShell against `Windows.Media.Ocr`, `swift` against Apple's
+/// Vision framework, a wrapper around `tesseract` — and picking between them
+/// here would put platform detection in a crate whose job is running tools.
+///
+/// The image path is appended as the final argument, which is what all three
+/// bundled scripts expect. It is passed as an argument rather than through a
+/// shell, so a path containing spaces or shell metacharacters cannot turn into
+/// a second command.
+pub struct LocalOcrBackend {
+    program: String,
+    args: Vec<String>,
+    /// Named in the result so the user knows what read their image.
+    label: String,
+}
+
+impl LocalOcrBackend {
+    pub fn new(program: impl Into<String>, args: Vec<String>, label: impl Into<String>) -> Self {
+        Self {
+            program: program.into(),
+            args,
+            label: label.into(),
+        }
+    }
+
+    /// Run the command and return its stdout, or why it could not be used.
+    ///
+    /// Every failure here is recoverable by design: the caller falls back to
+    /// the vision model, so a missing language pack or an absent `tesseract`
+    /// degrades to the old behaviour instead of failing the read.
+    async fn extract(&self, image_path: &str) -> Result<String, String> {
+        let mut command = Command::new(&self.program);
+        command.args(&self.args).arg(image_path);
+        #[cfg(windows)]
+        {
+            // Without this a console window flashes on every OCR run in the
+            // packaged desktop app. `tokio::process::Command` carries this as
+            // an inherent method, so no `CommandExt` import is needed.
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let output = timeout(LOCAL_OCR_TIMEOUT, command.output())
+            .await
+            .map_err(|_| format!("local OCR timed out after {}s", LOCAL_OCR_TIMEOUT.as_secs()))?
+            .map_err(|error| format!("local OCR could not be started: {error}"))?;
+
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            let detail = detail.trim();
+            return Err(if detail.is_empty() {
+                format!("local OCR exited with {}", output.status)
+            } else {
+                format!("local OCR failed: {detail}")
+            });
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+}
+
+/// What the caller wants out of an image.
+///
+/// An explicit choice rather than something inferred from the prompt text:
+/// guessing wrong either burns a paid vision call on a screenshot, or answers
+/// "what is this person doing" with a transcription of the timestamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadMode {
+    /// Text only. Local OCR first, vision model if it comes back empty.
+    Text,
+    /// A full visual description. Goes straight to the vision model.
+    Visual,
+}
+
+impl ReadMode {
+    fn from_input(input: &Value) -> Self {
+        match input.get("mode").and_then(Value::as_str) {
+            Some("visual") => Self::Visual,
+            _ => Self::Text,
+        }
+    }
+}
+
 pub struct ReadImageTool {
     /// The model driving the conversation, named in the unavailable-path error
     /// so the user knows which model could not read the image.
     main_model: String,
     vision: Option<VisionBackend>,
+    /// On-device OCR, tried before the vision model for text extraction.
+    /// `None` restores the vision-only behaviour exactly.
+    local_ocr: Option<LocalOcrBackend>,
     /// Where the delegate call's token usage is reported. `None` means nobody
     /// is metering (the CLI); the delegate still runs, its cost is just not
     /// accounted anywhere.
@@ -79,9 +181,22 @@ impl ReadImageTool {
         Self {
             main_model: main_model.into(),
             vision,
+            local_ocr: None,
             usage_sink: None,
             unavailable_reason: None,
         }
+    }
+
+    /// Try `backend` before the vision model when the caller asks for text.
+    ///
+    /// Worth doing whenever it is available: on-device OCR is free, returns in
+    /// well under a second, transcribes exactly rather than by reading pixels,
+    /// and never sends the image anywhere. For the common case — a screenshot,
+    /// a document, a receipt — it is both cheaper and more accurate than a
+    /// paid vision call.
+    pub fn with_local_ocr(mut self, backend: Option<LocalOcrBackend>) -> Self {
+        self.local_ocr = backend;
+        self
     }
 
     /// Report the delegate's token usage to `sink`. Without one, the call is
@@ -220,6 +335,11 @@ impl Tool for ReadImageTool {
                 "prompt": {
                     "type": "string",
                     "description": "Optional question or focus for the analysis. Defaults to a full description plus text transcription."
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["text", "visual"],
+                    "description": "What you need from the image. 'text' (the default) extracts the text and, where on-device OCR is available, does so locally and for free — use it for screenshots, documents, receipts, code, error messages, anything where the answer is the words. 'visual' asks a vision model to describe the image — use it when the question is about layout, objects, people, colours, charts, or anything that is not text."
                 }
             },
             "required": ["file_path"]
@@ -242,6 +362,52 @@ impl Tool for ReadImageTool {
             Ok(image_url) => image_url,
             Err(error) => return Self::error_result(error),
         };
+
+        // On-device OCR first when text is what was asked for. It is free and
+        // exact, so spending a paid vision call on a screenshot is waste — but
+        // only its *success* short-circuits: anything else falls through to the
+        // vision model below, which is the behaviour that shipped before.
+        let local_ocr = self
+            .local_ocr
+            .as_ref()
+            .filter(|_| ReadMode::from_input(&input) == ReadMode::Text);
+        if let Some(ocr) = local_ocr {
+            match ocr.extract(&file_path).await {
+                Ok(text) if text.chars().count() >= MIN_USEFUL_OCR_CHARS => {
+                    debug!(
+                        target: "dream_engine_tools",
+                        ocr = %ocr.label,
+                        chars = text.chars().count(),
+                        "ReadImage answered from local OCR",
+                    );
+                    return ToolResult {
+                        content: format!(
+                            "Image at {file_path}, transcribed on this machine by {} (no vision model was called):\n\n\
+                             {text}\n\n\
+                             [This is text extraction only. It says nothing about layout, objects, people, colours or \
+                             anything else non-textual. If the question needs those, call ReadImage again on this path \
+                             with mode=\"visual\".]",
+                            ocr.label
+                        ),
+                        is_error: false,
+                    };
+                }
+                // Too little text to be what the image is about — a photograph
+                // with a sign in it, say. The vision model answers instead.
+                Ok(text) => debug!(
+                    target: "dream_engine_tools",
+                    ocr = %ocr.label,
+                    chars = text.chars().count(),
+                    "local OCR found too little text; falling back to the vision model",
+                ),
+                Err(error) => warn!(
+                    target: "dream_engine_tools",
+                    ocr = %ocr.label,
+                    %error,
+                    "local OCR unavailable; falling back to the vision model",
+                ),
+            }
+        }
 
         let Some(vision) = self.vision.as_ref() else {
             warn!(

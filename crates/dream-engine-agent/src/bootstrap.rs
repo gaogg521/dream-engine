@@ -19,7 +19,7 @@ use dream_engine_tools::file_cache::FileStateCache;
 use dream_engine_tools::glob::GlobTool;
 use dream_engine_tools::grep::GrepTool;
 use dream_engine_tools::read::ReadTool;
-use dream_engine_tools::read_image::{ReadImageTool, VisionBackend};
+use dream_engine_tools::read_image::{LocalOcrBackend, ReadImageTool, VisionBackend};
 use dream_engine_tools::registry::ToolRegistry;
 use dream_engine_tools::tool_search::ToolSearchTool;
 use dream_engine_tools::view_image::ViewImageTool;
@@ -266,6 +266,25 @@ impl AgentBootstrap {
         None
     }
 
+    /// The host's on-device OCR command, if it supplied one.
+    ///
+    /// Unlike the vision backend this needs no capability check: OCR reads
+    /// pixels into text the same way whatever the main model is, and
+    /// `ReadImage` only consults it when text is what was asked for.
+    fn resolve_local_ocr(&self) -> Option<LocalOcrBackend> {
+        let config = self.config.local_ocr.as_ref()?;
+        info!(
+            target: "dream_engine_agent",
+            ocr = %config.label,
+            "agent bootstrap: ReadImage will try on-device OCR before the vision model",
+        );
+        Some(LocalOcrBackend::new(
+            config.program.clone(),
+            config.args.clone(),
+            config.label.clone(),
+        ))
+    }
+
     fn build_builtin_registry(&self, workspace_path: &Path, provider: &Arc<dyn LlmProvider>) -> ToolRegistry {
         let file_cache = self.build_file_cache();
         let mut registry = ToolRegistry::new();
@@ -282,6 +301,7 @@ impl AgentBootstrap {
         registry.register(Box::new(ViewImageTool::new()));
         registry.register(Box::new(
             ReadImageTool::new(self.config.model.clone(), self.resolve_vision_backend(provider))
+                .with_local_ocr(self.resolve_local_ocr())
                 .with_usage_sink(Arc::new(SinkDelegateUsage(Arc::clone(&self.output))))
                 .with_unavailable_reason(self.vision_unavailable_reason.clone()),
         ));
