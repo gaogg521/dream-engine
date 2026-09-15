@@ -442,6 +442,33 @@ async fn text_mode_answers_from_local_ocr_without_calling_the_vision_model() {
     assert!(result.content.contains("mode=\"visual\""), "{}", result.content);
 }
 
+/// Observed on the Windows engine under a Chinese user profile: `INV-2026-0042`
+/// came back as `工 NV 一 2926 一 9942`. OCR recognises characters and gets some
+/// wrong, so a result that reads as an exact transcription would have the agent
+/// quoting a serial number that is not the one in the image.
+#[tokio::test]
+async fn the_ocr_result_warns_that_characters_may_be_misread() {
+    let directory = TempDir::new().expect("temp dir");
+    let path = write_png(&directory);
+    let tool = ReadImageTool::new("deepseek-v4-flash", None)
+        .with_local_ocr(Some(ocr_printing("Invoice INV-2026-0042 total 1,280.00")));
+
+    let result = tool.execute(json!({ "file_path": path })).await;
+
+    assert!(!result.is_error, "{}", result.content);
+    let lowered = result.content.to_lowercase();
+    assert!(
+        lowered.contains("wrong") || lowered.contains("misread"),
+        "the result must not read as an exact transcription: {}",
+        result.content
+    );
+    assert!(
+        lowered.contains("serial number") || lowered.contains("identifier"),
+        "the warning has to name what it is dangerous for: {}",
+        result.content
+    );
+}
+
 /// An image with no text in it is not an OCR question. Falling through keeps
 /// the previous behaviour instead of answering with nothing.
 #[tokio::test]

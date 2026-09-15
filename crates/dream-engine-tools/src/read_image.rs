@@ -189,11 +189,15 @@ impl ReadImageTool {
 
     /// Try `backend` before the vision model when the caller asks for text.
     ///
-    /// Worth doing whenever it is available: on-device OCR is free, returns in
-    /// well under a second, transcribes exactly rather than by reading pixels,
-    /// and never sends the image anywhere. For the common case — a screenshot,
-    /// a document, a receipt — it is both cheaper and more accurate than a
-    /// paid vision call.
+    /// On-device OCR is free, returns in well under a second, and never sends
+    /// the image anywhere, which is why it goes first for a text question.
+    ///
+    /// It is not more accurate, and the result says so. A recogniser loaded
+    /// for one script misreads characters from another — `INV-2026-0042`
+    /// coming back as `工 NV 一 2926 一 9942` is a real observation from the
+    /// Windows engine under a Chinese profile — so the tool result tells the
+    /// caller not to treat identifiers from it as exact, and points at
+    /// `mode="visual"` when they must be.
     pub fn with_local_ocr(mut self, backend: Option<LocalOcrBackend>) -> Self {
         self.local_ocr = backend;
         self
@@ -339,7 +343,7 @@ impl Tool for ReadImageTool {
                 "mode": {
                     "type": "string",
                     "enum": ["text", "visual"],
-                    "description": "What you need from the image. 'text' (the default) extracts the text and, where on-device OCR is available, does so locally and for free — use it for screenshots, documents, receipts, code, error messages, anything where the answer is the words. 'visual' asks a vision model to describe the image — use it when the question is about layout, objects, people, colours, charts, or anything that is not text."
+                    "description": "What you need from the image. 'text' (the default) extracts the text and, where on-device OCR is available, does so locally and for free — use it for screenshots, documents, code, error messages, anything where the answer is the words. 'visual' asks a vision model to describe the image — use it when the question is about layout, objects, people, colours or charts, and also when the answer depends on characters being exactly right (a serial number, an error code, an amount), because local OCR misreads some characters."
                 }
             },
             "required": ["file_path"]
@@ -384,9 +388,13 @@ impl Tool for ReadImageTool {
                         content: format!(
                             "Image at {file_path}, transcribed on this machine by {} (no vision model was called):\n\n\
                              {text}\n\n\
-                             [This is text extraction only. It says nothing about layout, objects, people, colours or \
-                             anything else non-textual. If the question needs those, call ReadImage again on this path \
-                             with mode=\"visual\".]",
+                             [Local OCR output. Two limits worth knowing before relying on it:\n\
+                             - Text only: it says nothing about layout, objects, people or colours.\n\
+                             - It recognises characters and gets some wrong, most often digits and Latin letters when \
+                             the engine is loaded for a different script. Do not present a serial number, error code, \
+                             amount or identifier taken from this text as exact.\n\
+                             If the question needs the visual content, or hinges on characters being exactly right, \
+                             call ReadImage again on this path with mode=\"visual\".]",
                             ocr.label
                         ),
                         is_error: false,
