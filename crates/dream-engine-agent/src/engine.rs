@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use crate::cache_diagnostics::{CacheBreakDetector, CacheDiagnostic, CacheStats};
 use crate::commands::{CommandContext, CommandRegistry, CommandResult, CommandSpec, SlashCommand, default_registry};
 use crate::compact::auto::{CompactError, autocompact, should_autocompact};
-use crate::compact::emergency::is_at_emergency_limit;
+use crate::compact::emergency::{emergency_limit, is_at_emergency_limit};
 use crate::compact::estimate::{estimate_tokens_from_tool_image, estimate_tokens_from_tool_result};
 use crate::compact::micro::{microcompact, should_microcompact};
 use crate::compact::state::CompactState;
@@ -1436,12 +1436,11 @@ impl AgentEngine {
 
         // 3. Emergency check (skip if autocompact just succeeded)
         if !compacted && is_at_emergency_limit(self.compact_state.last_input_tokens, &self.compact_config) {
+            // Same helper the check itself uses: recomputing the limit here is
+            // how the number in the error drifts from the number that produced it.
             return Err(AgentError::ContextTooLong {
                 input_tokens: self.compact_state.last_input_tokens,
-                limit: self
-                    .compact_config
-                    .context_window
-                    .saturating_sub(self.compact_config.emergency_buffer),
+                limit: emergency_limit(&self.compact_config),
             });
         }
 

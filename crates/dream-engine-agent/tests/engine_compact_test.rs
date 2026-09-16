@@ -183,7 +183,8 @@ async fn tc_2_6_03_emergency_returns_error() {
 
 #[tokio::test]
 async fn tc_2_6_04_autocompact_then_continue() {
-    // Turn 1: tool use, returns input_tokens=170k (above autocompact threshold 167k)
+    // Turn 1: tool use, returns input_tokens=170k. The window is pinned to 200k
+    // so the default 80% trigger lands at 160k and 170k is above it.
     // Before turn 2: autocompact fires → LLM summary call → messages replaced
     // Turn 2 (after compact): text response with low input_tokens
     let turn1 = vec![
@@ -212,7 +213,10 @@ async fn tc_2_6_04_autocompact_then_continue() {
     ]));
 
     let mut config = test_config();
-    config.compact = CompactConfig::default();
+    config.compact = CompactConfig {
+        context_window: 200_000,
+        ..CompactConfig::default()
+    };
 
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(common::MockTool::new("mock_tool", "result", false)));
@@ -258,7 +262,12 @@ async fn tc_2_6_05_session_save_after_compact() {
     let provider = Arc::new(CompactMockProvider::new(vec![turn1, compact_summary, turn2]));
 
     let mut config = test_config();
-    config.compact = CompactConfig::default();
+    // Window pinned to 200k so the default 80% trigger lands at 160k and the
+    // 170k turn below is above it.
+    config.compact = CompactConfig {
+        context_window: 200_000,
+        ..CompactConfig::default()
+    };
     config.session.enabled = true;
     config.session.directory = dir.path().to_string_lossy().into_owned();
 

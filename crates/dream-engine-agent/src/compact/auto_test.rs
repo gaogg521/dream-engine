@@ -13,21 +13,37 @@ mod tests {
 
     #[test]
     fn above_threshold_triggers() {
-        // threshold = 200k - 20k - 13k = 167k
+        // Default is percentage mode: threshold = 1M * 80% = 800k.
         let config = default_config();
-        assert!(should_autocompact(170_000, &config));
+        assert!(should_autocompact(810_000, &config));
     }
 
     #[test]
     fn below_threshold_does_not_trigger() {
         let config = default_config();
-        assert!(!should_autocompact(160_000, &config));
+        assert!(!should_autocompact(790_000, &config));
     }
 
     #[test]
     fn at_exact_threshold_triggers() {
         let config = default_config();
-        assert!(should_autocompact(167_000, &config));
+        assert!(should_autocompact(800_000, &config));
+    }
+
+    #[test]
+    fn default_threshold_is_a_share_of_whatever_window_is_configured() {
+        // The point of the percentage default: the same config is correct at a
+        // 4k local window and at 1M. The absolute-buffer formula is not — it
+        // underflows to zero below 33k and compacts every single turn.
+        for window in [4_096usize, 8_192, 60_000, 200_000, 1_000_000] {
+            let config = CompactConfig {
+                context_window: window,
+                ..default_config()
+            };
+            let threshold = window * 80 / 100;
+            assert!(!should_autocompact(threshold as u64 - 1, &config), "window {window}");
+            assert!(should_autocompact(threshold as u64, &config), "window {window}");
+        }
     }
 
     #[test]
@@ -45,6 +61,9 @@ mod tests {
             context_window: 100_000,
             output_reserve: 10_000,
             autocompact_buffer: 5_000,
+            // Absolute-buffer mode is opt-in now; clearing the percentage is
+            // what selects it.
+            autocompact_threshold_pct: None,
             ..default_config()
         };
         // threshold = 100k - 10k - 5k = 85k
@@ -101,9 +120,10 @@ mod tests {
             autocompact_threshold_pct: None,
             ..default_config()
         };
-        // Same as default: threshold = 200k - 20k - 13k = 167k
-        assert!(!should_autocompact(166_999, &config));
-        assert!(should_autocompact(167_000, &config));
+        // Absolute-buffer formula against the 1M default window:
+        // threshold = 1M - 20k - 13k = 967k
+        assert!(!should_autocompact(966_999, &config));
+        assert!(should_autocompact(967_000, &config));
     }
 
     // ── truncate_for_retry ──────────────────────────────────────────────

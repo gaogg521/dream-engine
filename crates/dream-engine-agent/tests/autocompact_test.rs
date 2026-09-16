@@ -108,22 +108,22 @@ fn default_config() -> CompactConfig {
 
 #[test]
 fn tc_2_4_01_above_threshold_triggers() {
-    // effective_window = 200k - 20k = 180k, threshold = 180k - 13k = 167k
-    assert!(should_autocompact(170_000, &default_config()));
+    // Default is percentage mode: threshold = 1M * 80% = 800k.
+    assert!(should_autocompact(810_000, &default_config()));
 }
 
 // ── TC-2.4-02: Below threshold does not trigger ─────────────────────────────
 
 #[test]
 fn tc_2_4_02_below_threshold_does_not_trigger() {
-    assert!(!should_autocompact(160_000, &default_config()));
+    assert!(!should_autocompact(790_000, &default_config()));
 }
 
 // ── TC-2.4-03: Exact threshold triggers ─────────────────────────────────────
 
 #[test]
 fn tc_2_4_03_at_exact_threshold_triggers() {
-    assert!(should_autocompact(167_000, &default_config()));
+    assert!(should_autocompact(800_000, &default_config()));
 }
 
 // ── TC-2.4-04: Circuit breaker initial state ────────────────────────────────
