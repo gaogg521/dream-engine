@@ -1363,21 +1363,18 @@ impl AgentEngine {
         let mut compacted = false;
         let should_compact = should_autocompact(self.compact_state.last_input_tokens, &self.compact_config);
         if should_compact {
-            info!(target: "dream_engine_agent", context_tokens = self.compact_state.last_input_tokens, "context compaction triggered");
-            let threshold = if let Some(pct) = self.compact_config.autocompact_threshold_pct {
-                let t = self.compact_config.context_window * pct as usize / 100;
-                self.output.emit_info(&format!(
-                    "Autocompact threshold: {} tokens ({}% of {})",
-                    t, pct, self.compact_config.context_window
-                ));
-                t
-            } else {
-                self.compact_config
-                    .context_window
-                    .saturating_sub(self.compact_config.output_reserve)
-                    .saturating_sub(self.compact_config.autocompact_buffer)
-            };
-            let _ = threshold;
+            // Diagnostics, not a user message. This used to be emitted as a
+            // tip, which was harmless while the threshold was high enough to be
+            // rare and became raw English debug output in front of every user
+            // once compaction became ordinary. What the user needs is the
+            // result below, not the arithmetic that led to it.
+            info!(
+                target: "dream_engine_agent",
+                context_tokens = self.compact_state.last_input_tokens,
+                context_window = self.compact_config.context_window,
+                threshold_pct = ?self.compact_config.autocompact_threshold_pct,
+                "context compaction triggered"
+            );
         }
         if should_compact && !self.compact_state.is_circuit_broken(&self.compact_config) {
             let provider = Arc::clone(&self.provider);
@@ -1393,10 +1390,17 @@ impl AgentEngine {
             .await
             {
                 Ok(result) => {
-                    self.output.emit_info(&format!(
-                        "Autocompact: summarized {} messages ({} tokens → compact)",
-                        result.messages_summarized, result.pre_compact_tokens
-                    ));
+                    self.output.emit_info_coded(
+                        "AUTOCOMPACT_DONE",
+                        serde_json::json!({
+                            "count": result.messages_summarized,
+                            "tokens": result.pre_compact_tokens,
+                        }),
+                        &format!(
+                            "Autocompact: summarized {} message(s) ({} tokens → compact)",
+                            result.messages_summarized, result.pre_compact_tokens
+                        ),
+                    );
                     self.messages = result.messages;
                     self.context_state.record_compact();
                     self.refresh_local_context_estimate();
@@ -1407,15 +1411,19 @@ impl AgentEngine {
                     // Already tripped; logged at circuit-breaker level
                 }
                 Err(e) => {
+                    warn!(target: "dream_engine_agent", error = %e, "autocompact failed");
                     self.output.emit_error(&format!("Autocompact failed: {}", e));
                 }
             }
         } else if should_compact {
-            self.output.emit_info(&format!(
-                "Autocompact: skipped (circuit breaker tripped after {} consecutive failures, \
-                 context_tokens={})",
-                self.compact_state.consecutive_failures, self.compact_state.last_input_tokens
-            ));
+            self.output.emit_info_coded(
+                "AUTOCOMPACT_CIRCUIT_BROKEN",
+                serde_json::json!({ "failures": self.compact_state.consecutive_failures }),
+                &format!(
+                    "Autocompact: skipped after {} consecutive failures. Use /compact or start a new conversation.",
+                    self.compact_state.consecutive_failures
+                ),
+            );
         } else if !self.compact_config.enabled {
             let threshold = if let Some(pct) = self.compact_config.autocompact_threshold_pct {
                 self.compact_config.context_window * pct as usize / 100

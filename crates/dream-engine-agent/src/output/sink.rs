@@ -63,4 +63,19 @@ pub trait OutputSink: Send + Sync {
 
     /// Display informational message
     fn emit_info(&self, msg: &str);
+
+    /// Display an informational message an embedding host can localize.
+    ///
+    /// `code` names the message and `params` carries its variables, so a host
+    /// with a translation catalogue can render it in the user's language; the
+    /// engine's own English `fallback` is what everyone else shows. Without
+    /// this, compaction announced itself as raw English inside an otherwise
+    /// translated UI — tolerable while the threshold was high enough to be rare,
+    /// not once compaction became ordinary.
+    ///
+    /// Defaults to the plain text: a terminal has no catalogue to look the code
+    /// up in, and the fallback is exactly what it would have printed anyway.
+    fn emit_info_coded(&self, _code: &str, _params: serde_json::Value, fallback: &str) {
+        self.emit_info(fallback);
+    }
 }

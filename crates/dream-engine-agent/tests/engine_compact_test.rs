@@ -799,3 +799,103 @@ async fn tc_2_6_e2e_03_circuit_breaker_stops_retries() {
 
     assert_eq!(result.text, "Final");
 }
+
+// ── Compaction reaches the user in a language the host can translate ────────
+
+/// Records coded tips without falling back to English, the way an embedding
+/// host with a translation catalogue does.
+#[derive(Default)]
+struct CodedTipSink {
+    coded: Mutex<Vec<(String, serde_json::Value, String)>>,
+    plain: Mutex<Vec<String>>,
+}
+
+impl OutputSink for CodedTipSink {
+    fn emit_text_delta(&self, _text: &str, _msg_id: &str) {}
+    fn emit_thinking(&self, _text: &str, _msg_id: &str) {}
+    fn emit_tool_call(&self, _tool_use_id: &str, _name: &str, _input: &str) {}
+    fn emit_tool_result(&self, _tool_use_id: &str, _name: &str, _is_error: bool, _content: &str) {}
+    fn emit_stream_start(&self, _msg_id: &str) {}
+    fn emit_stream_end(&self, _msg_id: &str, _turns: usize, _i: u64, _o: u64, _cc: u64, _cr: u64) {}
+    fn emit_error(&self, _msg: &str) {}
+    fn emit_info(&self, msg: &str) {
+        self.plain.lock().unwrap().push(msg.to_string());
+    }
+    fn emit_info_coded(&self, code: &str, params: serde_json::Value, fallback: &str) {
+        self.coded
+            .lock()
+            .unwrap()
+            .push((code.to_string(), params, fallback.to_string()));
+    }
+}
+
+#[tokio::test]
+async fn autocompact_announces_itself_with_a_code_the_host_can_translate() {
+    // Compaction must not be silent — the user's history just got summarized —
+    // but the announcement used to be English prose a translated UI could do
+    // nothing with, alongside a raw "Autocompact threshold: N tokens (80% of
+    // M)" line that is diagnostics, not a user message.
+    let turn1 = vec![
+        LlmEvent::ToolUse {
+            id: "t1".to_string(),
+            name: "mock_tool".to_string(),
+            input: serde_json::json!({}),
+            extra: None,
+        },
+        LlmEvent::Done {
+            stop_reason: StopReason::ToolUse,
+            usage: TokenUsage {
+                input_tokens: 170_000,
+                output_tokens: 100,
+                ..Default::default()
+            },
+        },
+    ];
+    let provider = Arc::new(CompactMockProvider::new(vec![
+        turn1,
+        summary_turn("<summary>Summary</summary>"),
+        text_turn("Continuing", 10_000),
+    ]));
+
+    let mut config = test_config();
+    // 200k window puts the default 80% trigger at 160k, below the 170k above.
+    config.compact = CompactConfig {
+        context_window: 200_000,
+        ..CompactConfig::default()
+    };
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(common::MockTool::new("mock_tool", "result", false)));
+
+    let sink = Arc::new(CodedTipSink::default());
+    let mut engine = AgentEngine::new_with_provider(
+        provider,
+        config,
+        registry,
+        Arc::clone(&sink) as Arc<dyn OutputSink>,
+        std::env::temp_dir(),
+    );
+    engine.run("Start", "msg-1").await.expect("run should succeed");
+
+    let coded = sink.coded.lock().unwrap();
+    let done = coded
+        .iter()
+        .find(|(code, _, _)| code == "AUTOCOMPACT_DONE")
+        .expect("compaction must announce itself");
+    assert_eq!(
+        done.1["count"],
+        serde_json::json!(3),
+        "the host renders the count itself"
+    );
+    assert_eq!(done.1["tokens"], serde_json::json!(170_101));
+    assert!(
+        done.2.contains("Autocompact"),
+        "a host without a catalogue still needs readable English"
+    );
+
+    let plain = sink.plain.lock().unwrap();
+    assert!(
+        plain.is_empty(),
+        "compaction must not also emit untranslatable plain tips: {plain:?}"
+    );
+}
