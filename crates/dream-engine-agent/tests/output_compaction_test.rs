@@ -411,3 +411,36 @@ fn case_8_toon_system_prompt_injection() {
 
     eprintln!("[compaction:B] ✓ TOON system prompt injection verified");
 }
+
+// ── Coded tips ──────────────────────────────────────────────────────────────
+
+#[test]
+fn a_sink_without_a_catalogue_still_gets_the_english_text() {
+    // The default implementation is what the terminal and the JSON protocol
+    // rely on: they have no catalogue to look a code up in, and the fallback is
+    // exactly what they would have printed before codes existed.
+    struct PlainSink(Mutex<Vec<String>>);
+    impl OutputSink for PlainSink {
+        fn emit_text_delta(&self, _text: &str, _msg_id: &str) {}
+        fn emit_thinking(&self, _text: &str, _msg_id: &str) {}
+        fn emit_tool_call(&self, _tool_use_id: &str, _name: &str, _input: &str) {}
+        fn emit_tool_result(&self, _id: &str, _name: &str, _is_error: bool, _content: &str) {}
+        fn emit_stream_start(&self, _msg_id: &str) {}
+        fn emit_stream_end(&self, _msg_id: &str, _turns: usize, _i: u64, _o: u64, _cc: u64, _cr: u64) {}
+        fn emit_error(&self, _msg: &str) {}
+        fn emit_info(&self, msg: &str) {
+            self.0.lock().unwrap().push(msg.to_string());
+        }
+    }
+
+    let sink = PlainSink(Mutex::new(Vec::new()));
+    sink.emit_info_coded(
+        "AUTOCOMPACT_DONE",
+        json!({ "count": 3 }),
+        "Autocompact: summarized 3 message(s)",
+    );
+    assert_eq!(
+        sink.0.lock().unwrap().as_slice(),
+        ["Autocompact: summarized 3 message(s)"]
+    );
+}
