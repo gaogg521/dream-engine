@@ -3,20 +3,20 @@
 //! These tests treat `is_at_emergency_limit` as a public API and verify
 //! functional requirements from test-plan.md without relying on internal details.
 
-use dream_engine_agent::compact::emergency::{EMERGENCY_USER_MESSAGE, is_at_emergency_limit};
+use dream_engine_agent::compact::emergency::{EMERGENCY_USER_MESSAGE, emergency_limit, is_at_emergency_limit};
 use dream_engine_config::compact::CompactConfig;
 
 // ── TC-2.5-01: Below emergency threshold ───────────────────────────────────
 
 #[test]
 fn tc_2_5_01_below_emergency_threshold() {
-    // context_window=200_000, emergency_buffer=3_000
-    // emergency_limit = 200k - 3k = 197k
-    // 190k < 197k → false
+    // context_window=1_000_000, emergency_buffer=3_000
+    // emergency_limit = 1M - 3k = 997k
+    // 990k < 997k → false
     let config = CompactConfig::default();
     assert!(
-        !is_at_emergency_limit(190_000, &config),
-        "190k tokens should be below the 197k emergency limit"
+        !is_at_emergency_limit(990_000, &config),
+        "990k tokens should be below the 997k emergency limit"
     );
 }
 
@@ -24,11 +24,11 @@ fn tc_2_5_01_below_emergency_threshold() {
 
 #[test]
 fn tc_2_5_02_above_emergency_threshold() {
-    // 198k >= 197k → true
+    // 998k >= 997k → true
     let config = CompactConfig::default();
     assert!(
-        is_at_emergency_limit(198_000, &config),
-        "198k tokens should exceed the 197k emergency limit"
+        is_at_emergency_limit(998_000, &config),
+        "998k tokens should exceed the 997k emergency limit"
     );
 }
 
@@ -36,11 +36,11 @@ fn tc_2_5_02_above_emergency_threshold() {
 
 #[test]
 fn tc_2_5_03_at_exact_emergency_threshold() {
-    // 197k >= 197k → true
+    // 997k >= 997k → true
     let config = CompactConfig::default();
     assert!(
-        is_at_emergency_limit(197_000, &config),
-        "197k tokens should trigger at exactly the emergency limit"
+        is_at_emergency_limit(997_000, &config),
+        "997k tokens should trigger at exactly the emergency limit"
     );
 }
 
@@ -48,17 +48,23 @@ fn tc_2_5_03_at_exact_emergency_threshold() {
 
 #[test]
 fn tc_2_5_04_small_context_window() {
-    // context_window=8_000, emergency_buffer=3_000
-    // emergency_limit = 8k - 3k = 5k
-    // 6k >= 5k → true
+    // context_window=8_000, emergency_buffer=3_000 capped to 800 (half the
+    // headroom above the 6.4k autocompact trigger), so emergency_limit = 7.2k.
+    // The uncapped 5k limit sat BELOW the trigger: the turn was refused before
+    // compaction could run and the session was unrecoverable.
     let config = CompactConfig {
         context_window: 8_000,
         emergency_buffer: 3_000,
         ..CompactConfig::default()
     };
+    assert_eq!(emergency_limit(&config), 7_200);
     assert!(
-        is_at_emergency_limit(6_000, &config),
-        "6k tokens should exceed 5k emergency limit on an 8k context window"
+        !is_at_emergency_limit(6_400, &config),
+        "the autocompact trigger must not itself be a hard block"
+    );
+    assert!(
+        is_at_emergency_limit(7_200, &config),
+        "7.2k tokens should hit the emergency limit on an 8k context window"
     );
 }
 
@@ -72,7 +78,7 @@ fn emergency_check_ignores_enabled_flag() {
         ..CompactConfig::default()
     };
     assert!(
-        is_at_emergency_limit(198_000, &config),
+        is_at_emergency_limit(998_000, &config),
         "emergency check must fire regardless of the enabled flag"
     );
 }
@@ -99,14 +105,14 @@ fn autocompact_fires_before_emergency() {
     let config = CompactConfig::default();
 
     // Pick a token count that triggers autocompact but not emergency
-    let token_count: u64 = 170_000;
+    let token_count: u64 = 810_000;
     let autocompact_triggers = should_autocompact(token_count, &config);
     let emergency_triggers = is_at_emergency_limit(token_count, &config);
 
     assert!(
         autocompact_triggers && !emergency_triggers,
-        "at 170k tokens, autocompact should trigger (threshold 167k) \
-         but emergency should not (limit 197k)"
+        "at 810k tokens, autocompact should trigger (threshold 800k) \
+         but emergency should not (limit 997k)"
     );
 }
 
@@ -116,7 +122,7 @@ fn both_trigger_near_limit() {
     use dream_engine_agent::compact::auto::should_autocompact;
 
     let config = CompactConfig::default();
-    let token_count: u64 = 198_000;
+    let token_count: u64 = 998_000;
 
     assert!(should_autocompact(token_count, &config));
     assert!(is_at_emergency_limit(token_count, &config));

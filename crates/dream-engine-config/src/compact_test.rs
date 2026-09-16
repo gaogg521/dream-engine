@@ -7,7 +7,7 @@ mod tests {
     #[test]
     fn default_values_match_spec() {
         let cfg = CompactConfig::default();
-        assert_eq!(cfg.context_window, 200_000);
+        assert_eq!(cfg.context_window, 1_000_000);
         assert_eq!(cfg.output_reserve, 20_000);
         assert_eq!(cfg.autocompact_buffer, 13_000);
         assert_eq!(cfg.emergency_buffer, 3_000);
@@ -17,7 +17,7 @@ mod tests {
         assert_eq!(cfg.micro_keep_recent, 5);
         assert_eq!(cfg.micro_gap_seconds, 3600);
         assert!(cfg.enabled);
-        assert_eq!(cfg.autocompact_threshold_pct, None);
+        assert_eq!(cfg.autocompact_threshold_pct, Some(80));
         assert_eq!(
             cfg.compactable_tools,
             vec!["Read", "ExecCommand", "Grep", "Glob", "Write", "Edit"]
@@ -158,9 +158,12 @@ cache_diagnostics = true
     }
 
     #[test]
-    fn toml_absent_threshold_pct_is_none() {
+    fn toml_absent_threshold_pct_keeps_the_percentage_default() {
+        // Absent means "use the default mode", which is percentage-based. A
+        // config that only narrows the window must still get a trigger that
+        // scales with it, not the absolute-buffer formula.
         let toml_str = r#"context_window = 128000"#;
         let cfg: CompactConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(cfg.autocompact_threshold_pct, None);
+        assert_eq!(cfg.autocompact_threshold_pct, Some(80));
     }
 }

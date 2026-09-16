@@ -1174,10 +1174,15 @@ allow_list = ["Read", "Grep", "Glob"]
 
 # Context compaction settings
 # [compact]
-# context_window = 200000        # context window size in tokens
-# output_reserve = 20000         # tokens reserved for output
-# autocompact_buffer = 13000     # buffer below effective window for autocompact trigger
-# emergency_buffer = 3000        # tokens from limit for emergency block
+# context_window = 1000000       # context window size in tokens; set this to the
+#                                # model's real window — every threshold below is
+#                                # derived from it
+# autocompact_threshold_pct = 80 # compact at this share of the window (default);
+#                                # set to nothing to use the two buffers below
+# output_reserve = 20000         # tokens reserved for output (absolute mode only)
+# autocompact_buffer = 13000     # buffer below effective window (absolute mode only)
+# emergency_buffer = 3000        # tokens from limit for emergency block, capped so
+#                                # the block stays above the autocompact trigger
 # max_failures = 3               # consecutive failures before circuit-breaker trips
 # tool_output_max_bytes = 10000  # maximum model-facing UTF-8 bytes per tool result
 # microcompact_enabled = false   # legacy history rewriting; disabled by default
