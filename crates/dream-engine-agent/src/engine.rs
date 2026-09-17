@@ -700,10 +700,45 @@ impl AgentEngine {
             system,
             messages,
             tools,
-            max_tokens: self.max_tokens,
+            max_tokens: self.output_budget(),
             thinking: self.thinking.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
         }
+    }
+
+    /// Output budget for this request, capped so prompt plus output still fit
+    /// the context window.
+    ///
+    /// Providers count the requested output against the window, and nothing
+    /// used to relate the two: the OpenAI default is 32000 tokens, so on a
+    /// 32768-token model *every* request was rejected — "you requested about
+    /// 44055 tokens (7451 of text input, 4604 of tool input, 32000 in the
+    /// output)" — no matter how short the conversation. Compaction cannot help
+    /// with that; there was never a prompt small enough.
+    ///
+    /// The cap only ever lowers the budget, and only binds when the window is
+    /// small: against a 1M window the room left dwarfs any sane output request,
+    /// so the value passes through untouched.
+    fn output_budget(&self) -> Option<u32> {
+        let requested = self
+            .max_tokens
+            .or_else(|| self.compat.default_max_tokens_for_model(&self.model))?;
+
+        let window = self.compact_config.context_window;
+        // A tenth of the window, against an estimate that has to predict the
+        // provider's own tokenizer. Measured on a real rejection, ours read
+        // ~1.4k low on a 12k prompt; a margin that scales with the window
+        // absorbs that without shrinking the budget on a large one.
+        let margin = window / 10;
+        let room = window
+            .saturating_sub(self.context_state.context_usage as usize)
+            .saturating_sub(margin);
+
+        // Never ask for less than a usable answer. If even this does not fit,
+        // the provider says so and overflow recovery takes it from there —
+        // better than silently truncating every reply to nothing.
+        let capped = u32::try_from(room).unwrap_or(u32::MAX).max(MIN_OUTPUT_TOKENS);
+        Some(requested.min(capped))
     }
 
     fn tool_definitions_for_turn(&self, kind: TurnKind) -> Vec<ToolDef> {
@@ -1554,6 +1589,16 @@ impl AgentEngine {
         Ok(())
     }
 }
+
+/// Floor for the per-request output budget.
+///
+/// The cap in [`AgentEngine::output_budget`] is derived from whatever room is
+/// left in the window, and that can round down to nothing on a nearly-full
+/// context. Asking for zero output tokens buys nothing — the request still
+/// costs a full prompt and comes back empty — so the floor keeps the reply
+/// worth having and lets the overflow path handle the case where it truly does
+/// not fit.
+const MIN_OUTPUT_TOKENS: u32 = 1024;
 
 /// The provider's own words, when a failed turn was a context overflow.
 ///
