@@ -1135,3 +1135,55 @@ async fn a_large_window_leaves_the_requested_budget_alone() {
     // 1M-window model down would shorten every answer for no reason.
     assert_eq!(max_tokens_asked_for(1_000_000).await, Some(32_000));
 }
+
+#[tokio::test]
+async fn one_message_larger_than_the_window_says_so_instead_of_leaking_internals() {
+    // Pasting a document bigger than the whole window into a small model. The
+    // summary call cannot fit either, and autocompact's fallback — drop the
+    // oldest 20% — frees nothing when there is only one message. The user used
+    // to get "Autocompact failed: Prompt too long after 1 retries", which is
+    // both untranslatable and advice they cannot act on.
+    struct AlwaysTooLong;
+
+    #[async_trait]
+    impl LlmProvider for AlwaysTooLong {
+        async fn stream(&self, _request: &LlmRequest) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+            Err(ProviderError::PromptTooLong(
+                "This endpoint's maximum context length is 32768 tokens".to_string(),
+            ))
+        }
+    }
+
+    let mut config = test_config();
+    config.compact = CompactConfig {
+        context_window: 32_768,
+        ..CompactConfig::default()
+    };
+
+    let sink = Arc::new(CodedTipSink::default());
+    let mut engine = AgentEngine::new_with_provider(
+        Arc::new(AlwaysTooLong) as Arc<dyn LlmProvider>,
+        config,
+        ToolRegistry::new(),
+        Arc::clone(&sink) as Arc<dyn OutputSink>,
+        std::env::temp_dir(),
+    );
+
+    let error = engine.run("a very large pasted document", "msg-1").await.unwrap_err();
+    assert!(
+        matches!(error, AgentError::ContextTooLong { .. }),
+        "the turn must end on the readable limit, not the provider's wording: {error:?}"
+    );
+
+    let coded = sink.coded.lock().unwrap();
+    assert!(
+        coded.iter().any(|(code, _, _)| code == "MESSAGE_LARGER_THAN_WINDOW"),
+        "the user needs to be told to split the message or change model, got {:?}",
+        coded.iter().map(|(code, _, _)| code).collect::<Vec<_>>()
+    );
+    assert!(
+        sink.plain.lock().unwrap().is_empty(),
+        "no untranslatable plain text may reach the user: {:?}",
+        sink.plain.lock().unwrap()
+    );
+}
