@@ -959,11 +959,18 @@ impl AgentEngine {
     /// that the real window is *smaller* than what we assumed; it is never
     /// evidence that it is larger, and believing otherwise would disable
     /// compaction on a model that had just proved it needs it.
+    ///
+    /// Narrowing lasts for the session. It is not written back to the model's
+    /// saved settings: this is inferred from an error string, and a wrong value
+    /// persisted there would quietly mis-scale the usage meter and the
+    /// compaction threshold for every future conversation with that model.
     async fn recover_from_context_overflow(&mut self, message: &str) -> Result<(), AgentError> {
         let sent = self.compact_state.last_input_tokens as usize;
-        // A stated limit is exact. Failing that, the size of the prompt that
-        // was just refused is still hard evidence — the real window is below
-        // it — which is a bound, not a guess. With neither, the window stays as
+        // A stated limit is exact. Failing that, fall back to the engine's own
+        // running estimate of the context it just sent: the real window is
+        // below what was refused, and this estimate does not exceed that, so
+        // adopting it errs toward compacting slightly early rather than toward
+        // a window the model does not have. With neither, the window stays as
         // configured and compaction alone has to do the work.
         let learned = parse_context_limit(message).or((sent > 0).then_some(sent));
 
