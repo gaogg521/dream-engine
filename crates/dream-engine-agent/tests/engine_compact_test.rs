@@ -1064,3 +1064,74 @@ async fn an_overflow_with_no_stated_limit_still_narrows_and_recovers() {
         "with no number to learn, compaction alone has to carry the recovery"
     );
 }
+
+// ── The output budget has to fit the window too ─────────────────────────────
+
+/// Captures the `max_tokens` of every request it is handed.
+struct RecordingProvider {
+    requested: Mutex<Vec<Option<u32>>>,
+    turns: Mutex<VecDeque<Vec<LlmEvent>>>,
+}
+
+#[async_trait]
+impl LlmProvider for RecordingProvider {
+    async fn stream(&self, request: &LlmRequest) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+        self.requested.lock().unwrap().push(request.max_tokens);
+        let events = self.turns.lock().unwrap().pop_front().unwrap_or_default();
+        let (tx, rx) = mpsc::channel(64);
+        tokio::spawn(async move {
+            for event in events {
+                let _ = tx.send(event).await;
+            }
+        });
+        Ok(rx)
+    }
+}
+
+async fn max_tokens_asked_for(context_window: usize) -> Option<u32> {
+    let provider = Arc::new(RecordingProvider {
+        requested: Mutex::new(Vec::new()),
+        turns: Mutex::new(VecDeque::from(vec![text_turn("done", 1_000)])),
+    });
+    let mut config = test_config();
+    config.max_tokens = Some(32_000);
+    config.compact = CompactConfig {
+        context_window,
+        ..CompactConfig::default()
+    };
+    let mut engine = AgentEngine::new_with_provider(
+        Arc::clone(&provider) as Arc<dyn LlmProvider>,
+        config,
+        ToolRegistry::new(),
+        silent_output(),
+        std::env::temp_dir(),
+    );
+    engine.run("hi", "msg-1").await.expect("run");
+    let asked = provider.requested.lock().unwrap();
+    asked[0]
+}
+
+#[tokio::test]
+async fn the_output_budget_is_capped_to_what_the_window_can_hold() {
+    // The bug this guards, seen on a real rejection: a 32768-token model with
+    // a 32000-token output default leaves 768 tokens for everything else, so
+    // every request was refused — "you requested about 44055 tokens (7451 of
+    // text input, 4604 of tool input, 32000 in the output)" — regardless of how
+    // short the conversation was. No amount of compaction could have fixed it.
+    let asked = max_tokens_asked_for(32_768).await.expect("a budget must still be sent");
+    assert!(
+        asked < 32_000,
+        "the 32000-token default has to be cut down on a 32768-token window, got {asked}"
+    );
+    assert!(
+        (asked as usize) < 32_768,
+        "the budget alone must not consume the whole window, got {asked}"
+    );
+}
+
+#[tokio::test]
+async fn a_large_window_leaves_the_requested_budget_alone() {
+    // The cap must only bind where the window is genuinely tight; clamping a
+    // 1M-window model down would shorten every answer for no reason.
+    assert_eq!(max_tokens_asked_for(1_000_000).await, Some(32_000));
+}
