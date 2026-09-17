@@ -1187,3 +1187,36 @@ async fn one_message_larger_than_the_window_says_so_instead_of_leaking_internals
         sink.plain.lock().unwrap()
     );
 }
+
+#[tokio::test]
+async fn the_output_cap_never_drops_below_the_thinking_budget() {
+    // Anthropic rejects a request whose max_tokens does not exceed
+    // thinking.budget_tokens, and the two are projected independently. Capping
+    // the output to the room left in a small window could therefore turn a
+    // tight context into a hard 400 instead of a shorter answer.
+    let provider = Arc::new(RecordingProvider {
+        requested: Mutex::new(Vec::new()),
+        turns: Mutex::new(VecDeque::from(vec![text_turn("done", 1_000)])),
+    });
+    let mut config = test_config();
+    config.max_tokens = Some(32_000);
+    config.thinking = Some(dream_engine_types::llm::ThinkingConfig::Enabled { budget_tokens: 8_192 });
+    config.compact = CompactConfig {
+        context_window: 16_384,
+        ..CompactConfig::default()
+    };
+    let mut engine = AgentEngine::new_with_provider(
+        Arc::clone(&provider) as Arc<dyn LlmProvider>,
+        config,
+        ToolRegistry::new(),
+        silent_output(),
+        std::env::temp_dir(),
+    );
+    engine.run("hi", "msg-1").await.expect("run");
+
+    let asked = provider.requested.lock().unwrap()[0].expect("a budget must be sent");
+    assert!(
+        asked > 8_192,
+        "max_tokens must stay above the 8192-token thinking budget, got {asked}"
+    );
+}

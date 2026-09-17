@@ -737,8 +737,26 @@ impl AgentEngine {
         // Never ask for less than a usable answer. If even this does not fit,
         // the provider says so and overflow recovery takes it from there —
         // better than silently truncating every reply to nothing.
-        let capped = u32::try_from(room).unwrap_or(u32::MAX).max(MIN_OUTPUT_TOKENS);
+        //
+        // Extended thinking raises that floor: Anthropic rejects a request
+        // whose `max_tokens` does not exceed `thinking.budget_tokens`, and the
+        // two are projected independently, so clamping below the budget would
+        // turn a tight window into a hard 400 rather than a shorter answer.
+        let floor = MIN_OUTPUT_TOKENS.max(self.thinking_floor());
+        let capped = u32::try_from(room).unwrap_or(u32::MAX).max(floor);
         Some(requested.min(capped))
+    }
+
+    /// Smallest output budget extended thinking can be asked to live with.
+    ///
+    /// Zero when thinking is off or unbudgeted. Otherwise the budget itself
+    /// plus room for a reply, since the budget is consumed before the model
+    /// writes anything the user sees.
+    fn thinking_floor(&self) -> u32 {
+        match &self.thinking {
+            Some(ThinkingConfig::Enabled { budget_tokens }) => budget_tokens.saturating_add(MIN_OUTPUT_TOKENS),
+            _ => 0,
+        }
     }
 
     fn tool_definitions_for_turn(&self, kind: TurnKind) -> Vec<ToolDef> {
