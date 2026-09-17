@@ -899,3 +899,168 @@ async fn autocompact_announces_itself_with_a_code_the_host_can_translate() {
         "compaction must not also emit untranslatable plain tips: {plain:?}"
     );
 }
+
+// ── Recovering when the provider says the prompt does not fit ───────────────
+
+/// Rejects the first generation with a provider overflow error, then behaves.
+struct OverflowThenOkProvider {
+    rejected: Mutex<bool>,
+    turns: Mutex<VecDeque<Vec<LlmEvent>>>,
+    calls: Mutex<usize>,
+}
+
+impl OverflowThenOkProvider {
+    fn new(turns: Vec<Vec<LlmEvent>>) -> Self {
+        Self {
+            rejected: Mutex::new(false),
+            turns: Mutex::new(VecDeque::from(turns)),
+            calls: Mutex::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl LlmProvider for OverflowThenOkProvider {
+    async fn stream(&self, _request: &LlmRequest) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+        *self.calls.lock().unwrap() += 1;
+        let mut rejected = self.rejected.lock().unwrap();
+        if !*rejected {
+            *rejected = true;
+            return Err(ProviderError::PromptTooLong(
+                "This model's maximum context length is 200000 tokens. However, you requested \
+                 240000 tokens (235000 in the messages, 5000 in the completion)."
+                    .to_string(),
+            ));
+        }
+        drop(rejected);
+        let events = self.turns.lock().unwrap().pop_front().unwrap_or_else(|| {
+            vec![LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: TokenUsage::default(),
+            }]
+        });
+        let (tx, rx) = mpsc::channel(64);
+        tokio::spawn(async move {
+            for event in events {
+                let _ = tx.send(event).await;
+            }
+        });
+        Ok(rx)
+    }
+}
+
+#[tokio::test]
+async fn a_provider_overflow_is_recovered_instead_of_failing_the_turn() {
+    // The situation a user who has never heard of a context window lands in:
+    // the model's real window is smaller than the one assumed for it, so the
+    // local estimate says there is room, autocompact never fires, and the
+    // provider rejects the turn. Nothing about that is actionable for them.
+    let provider = Arc::new(OverflowThenOkProvider::new(vec![
+        summary_turn("<summary>Summary</summary>"),
+        text_turn("Recovered and answered", 50_000),
+    ]));
+
+    let mut config = test_config();
+    // The wrong assumption: a window far larger than the model really has.
+    config.compact = CompactConfig {
+        context_window: 1_000_000,
+        ..CompactConfig::default()
+    };
+
+    let sink = Arc::new(CodedTipSink::default());
+    let mut engine = AgentEngine::new_with_provider(
+        Arc::clone(&provider) as Arc<dyn LlmProvider>,
+        config,
+        ToolRegistry::new(),
+        Arc::clone(&sink) as Arc<dyn OutputSink>,
+        std::env::temp_dir(),
+    );
+
+    let result = engine
+        .run("Keep going", "msg-1")
+        .await
+        .expect("an overflow the provider can describe must not end the turn");
+    assert_eq!(result.text, "Recovered and answered");
+
+    let coded = sink.coded.lock().unwrap();
+    let learned = coded
+        .iter()
+        .find(|(code, _, _)| code == "CONTEXT_WINDOW_LEARNED")
+        .expect("the user should be told the window was smaller than assumed");
+    assert_eq!(
+        learned.1["tokens"],
+        serde_json::json!(200_000),
+        "the window stated by the provider is the one to believe, not the 240000 we sent"
+    );
+    assert!(
+        coded.iter().any(|(code, _, _)| code == "AUTOCOMPACT_DONE"),
+        "recovery has to actually free context, not just relabel the failure"
+    );
+}
+
+#[tokio::test]
+async fn an_overflow_with_no_stated_limit_still_narrows_and_recovers() {
+    // Ollama reports no number at all. The size of the prompt just refused is
+    // still an upper bound on the real window, which is evidence rather than a
+    // guess — and without using it, the next turn would repeat the failure.
+    struct NoNumberOverflow {
+        rejected: Mutex<bool>,
+        turns: Mutex<VecDeque<Vec<LlmEvent>>>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for NoNumberOverflow {
+        async fn stream(&self, _request: &LlmRequest) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+            let mut rejected = self.rejected.lock().unwrap();
+            if !*rejected {
+                *rejected = true;
+                return Err(ProviderError::PromptTooLong(
+                    "llm: context overflow - prompt exceeds the available context window".to_string(),
+                ));
+            }
+            drop(rejected);
+            let events = self.turns.lock().unwrap().pop_front().unwrap_or_default();
+            let (tx, rx) = mpsc::channel(64);
+            tokio::spawn(async move {
+                for event in events {
+                    let _ = tx.send(event).await;
+                }
+            });
+            Ok(rx)
+        }
+    }
+
+    let provider = Arc::new(NoNumberOverflow {
+        rejected: Mutex::new(false),
+        turns: Mutex::new(VecDeque::from(vec![
+            summary_turn("<summary>Summary</summary>"),
+            text_turn("Recovered", 4_000),
+        ])),
+    });
+
+    let mut config = test_config();
+    config.compact = CompactConfig {
+        context_window: 1_000_000,
+        ..CompactConfig::default()
+    };
+
+    let sink = Arc::new(CodedTipSink::default());
+    let mut engine = AgentEngine::new_with_provider(
+        provider as Arc<dyn LlmProvider>,
+        config,
+        ToolRegistry::new(),
+        Arc::clone(&sink) as Arc<dyn OutputSink>,
+        std::env::temp_dir(),
+    );
+
+    let result = engine.run("Keep going", "msg-1").await.expect("should recover");
+    assert_eq!(result.text, "Recovered");
+    assert!(
+        sink.coded
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(code, _, _)| code == "AUTOCOMPACT_DONE"),
+        "with no number to learn, compaction alone has to carry the recovery"
+    );
+}

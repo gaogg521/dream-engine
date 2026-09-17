@@ -100,6 +100,83 @@ pub(crate) fn provider_error_from_json_body(body: &Value, body_bytes: &[u8]) -> 
     }
 }
 
+/// Does this upstream error text mean "the prompt does not fit the context
+/// window"?
+///
+/// Public because the agent has to recognise the same condition arriving as a
+/// bare string: a gateway that reports the failure mid-stream produces an
+/// `LlmEvent::Error(String)`, which has already lost the
+/// [`ProviderError::PromptTooLong`] typing by the time the agent sees it.
+pub fn is_context_overflow(message: &str) -> bool {
+    looks_like_context_overflow(message)
+}
+
+/// Smallest and largest window sizes worth believing from an error string.
+///
+/// Below the floor the "limit" is far more likely to be a completion budget or
+/// a stray count than a context window; above the ceiling it is an id or a
+/// byte count. A wrong value here makes the agent compact against a fiction,
+/// so the bar is deliberately narrow.
+const PLAUSIBLE_WINDOW: std::ops::RangeInclusive<usize> = 256..=20_000_000;
+
+/// Phrases that introduce the model's real context window, and whether the
+/// number sits after the phrase or before it.
+///
+/// Matching on phrases rather than scanning for numbers is the whole point.
+/// OpenAI's message carries four of them — "This model's maximum context
+/// length is 128000 tokens. However, you requested 130500 tokens (125000 in
+/// the messages, 5500 in the completion)" — so "the smallest number present"
+/// would learn 5500 and compact the session down to nothing.
+const WINDOW_PHRASES: &[(&str, bool)] = &[
+    ("maximum context length is", true),
+    ("maximum context length of", true),
+    ("context length is", true),
+    ("context window is", true),
+    ("context window of", true),
+    ("context limit is", true),
+    ("maximum", false),
+];
+
+/// Recover the model's real context window from a provider's overflow error.
+///
+/// Returns `None` whenever the message does not state one in a form we
+/// recognise — Ollama's "context overflow - prompt exceeds the available
+/// context window" carries no number at all — and the caller must then fall
+/// back to shrinking relative to what it just sent rather than guessing.
+pub fn parse_context_limit(message: &str) -> Option<usize> {
+    let lower = message.to_ascii_lowercase();
+    WINDOW_PHRASES
+        .iter()
+        .find_map(|(phrase, after)| {
+            let at = lower.find(phrase)?;
+            if *after {
+                integer_after(&lower, at + phrase.len())
+            } else {
+                integer_before(&lower, at)
+            }
+        })
+        .filter(|window| PLAUSIBLE_WINDOW.contains(window))
+}
+
+/// First integer at or after `from`, skipping any non-digits in between.
+fn integer_after(haystack: &str, from: usize) -> Option<usize> {
+    let rest = haystack.get(from..)?;
+    let start = rest.find(|c: char| c.is_ascii_digit())?;
+    let digits: String = rest[start..].chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// Last integer ending at or before `before`, skipping any non-digits.
+fn integer_before(haystack: &str, before: usize) -> Option<usize> {
+    let head = haystack.get(..before)?.trim_end();
+    let end = head.rfind(|c: char| c.is_ascii_digit())? + 1;
+    let start = head[..end]
+        .rfind(|c: char| !c.is_ascii_digit())
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    head[start..end].parse().ok()
+}
+
 fn json_http_status_code(value: &Value) -> Option<u16> {
     value
         .as_u64()

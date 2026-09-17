@@ -130,3 +130,61 @@ mod json_error_body_tests {
         assert!(matches!(error, ProviderError::Api { status: 400, .. }));
     }
 }
+
+// ── Recovering the real window from an overflow error ───────────────────────
+
+#[test]
+fn parses_the_window_openai_reports() {
+    // Four numbers, and the limit is neither the smallest nor the first.
+    // "Take the smallest" would learn 5500 and compact the session to nothing.
+    let message = "This model's maximum context length is 128000 tokens. However, you requested \
+                   130500 tokens (125000 in the messages, 5500 in the completion). Please reduce \
+                   the length of the messages or completion.";
+    assert_eq!(parse_context_limit(message), Some(128_000));
+}
+
+#[test]
+fn parses_the_window_anthropic_reports() {
+    // The number sits *before* the keyword here.
+    let message = "prompt is too long: 215123 tokens > 200000 maximum";
+    assert_eq!(parse_context_limit(message), Some(200_000));
+}
+
+#[test]
+fn parses_a_window_stated_after_context_window() {
+    assert_eq!(
+        parse_context_limit("Input validation error: the context window is 32768 tokens"),
+        Some(32_768)
+    );
+}
+
+#[test]
+fn reports_nothing_when_the_provider_states_no_number() {
+    // Ollama. The caller must fall back to shrinking relative to what it sent
+    // rather than inventing a limit.
+    assert_eq!(
+        parse_context_limit("llm: context overflow - prompt exceeds the available context window"),
+        None
+    );
+    assert_eq!(parse_context_limit("context_length_exceeded"), None);
+}
+
+#[test]
+fn rejects_numbers_too_small_or_too_large_to_be_a_window() {
+    // A completion budget misread as a window would compact every turn; an id
+    // misread as one would disable compaction entirely.
+    assert_eq!(parse_context_limit("maximum context length is 12 tokens"), None);
+    assert_eq!(parse_context_limit("maximum context length is 1699999999 tokens"), None);
+}
+
+#[test]
+fn a_mid_stream_overflow_string_is_still_recognised() {
+    // It arrives as a bare string once the SSE frame has lost its typing.
+    assert!(is_context_overflow(
+        "This model's maximum context length is 128000 tokens"
+    ));
+    assert!(is_context_overflow(
+        "prompt is too long: 215123 tokens > 200000 maximum"
+    ));
+    assert!(!is_context_overflow("rate limit exceeded"));
+}

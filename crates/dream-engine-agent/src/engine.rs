@@ -44,6 +44,7 @@ use dream_engine_config::hooks::HookEngine;
 use dream_engine_protocol::events::ToolCategory;
 use dream_engine_protocol::writer::ProtocolEmitter;
 use dream_engine_protocol::{ToolApprovalManager, ToolCallGuard};
+use dream_engine_providers::error::{ProviderError, is_context_overflow, parse_context_limit};
 use dream_engine_providers::provider::{LlmProvider, create_provider};
 use dream_engine_tools::registry::ToolRegistry;
 use dream_engine_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
@@ -908,18 +909,93 @@ impl AgentEngine {
             // On the first model turn context_tokens is 0 so neither
             // autocompact nor emergency will fire.
             self.run_compaction().await?;
-            let request = self.build_request(kind);
-            let mut rx = self.provider.stream(&request).await?;
-            let outcome = self.consume_stream(&mut rx).await?;
-            let has_provider_usage = self.record_turn_usage(&outcome.usage);
-            if !has_provider_usage {
-                let assistant_content = build_assistant_content(&outcome);
-                self.record_local_context_addition(estimate_content_tokens(&assistant_content));
+            match self.generate(kind).await {
+                Ok(outcome) => Ok(outcome),
+                Err(error) => {
+                    // The local estimate said the prompt fit and the provider
+                    // disagreed. That is not a user error and it is recoverable:
+                    // the provider just told us something about the model that
+                    // nothing else could, so learn it, compact on that evidence
+                    // rather than on the estimate that was wrong, and try again.
+                    let Some(message) = context_overflow_message(&error) else {
+                        return Err(error);
+                    };
+                    self.recover_from_context_overflow(&message).await?;
+                    // Exactly one retry. A second overflow means compaction did
+                    // not free enough, and looping would spend a full prompt per
+                    // attempt to keep learning the same thing.
+                    self.generate(kind).await
+                }
             }
-            Ok(outcome)
         }
         .instrument(span)
         .await
+    }
+
+    /// One model call, plus the usage bookkeeping that follows it.
+    async fn generate(&mut self, kind: TurnKind) -> Result<StreamOutcome, AgentError> {
+        let request = self.build_request(kind);
+        let mut rx = self.provider.stream(&request).await?;
+        let outcome = self.consume_stream(&mut rx).await?;
+        let has_provider_usage = self.record_turn_usage(&outcome.usage);
+        if !has_provider_usage {
+            let assistant_content = build_assistant_content(&outcome);
+            self.record_local_context_addition(estimate_content_tokens(&assistant_content));
+        }
+        Ok(outcome)
+    }
+
+    /// Take the provider at its word about the context window, then compact.
+    ///
+    /// Reached when the session is configured with a window larger than the
+    /// model really has — the common case being a model nobody declared a
+    /// window for, running on the assumed default. Left alone this is a dead
+    /// end for anyone who does not know what a context window is: the turn
+    /// fails with the provider's own wording, autocompact never fires because
+    /// the local estimate still says there is room, and every retry fails the
+    /// same way.
+    ///
+    /// The window is only ever narrowed, never widened. An error is evidence
+    /// that the real window is *smaller* than what we assumed; it is never
+    /// evidence that it is larger, and believing otherwise would disable
+    /// compaction on a model that had just proved it needs it.
+    async fn recover_from_context_overflow(&mut self, message: &str) -> Result<(), AgentError> {
+        let sent = self.compact_state.last_input_tokens as usize;
+        // A stated limit is exact. Failing that, the size of the prompt that
+        // was just refused is still hard evidence — the real window is below
+        // it — which is a bound, not a guess. With neither, the window stays as
+        // configured and compaction alone has to do the work.
+        let learned = parse_context_limit(message).or((sent > 0).then_some(sent));
+
+        if let Some(window) = learned.filter(|window| *window < self.compact_config.context_window) {
+            info!(
+                target: "dream_engine_agent",
+                previous = self.compact_config.context_window,
+                learned = window,
+                stated = parse_context_limit(message).is_some(),
+                "narrowing context window after a provider overflow"
+            );
+            self.compact_config.context_window = window;
+            self.output.emit_info_coded(
+                "CONTEXT_WINDOW_LEARNED",
+                serde_json::json!({ "tokens": window }),
+                &format!(
+                    "This model's context window is {window} tokens, smaller than assumed.                      Compacting the conversation and continuing."
+                ),
+            );
+        }
+
+        if self.compact_now().await {
+            return Ok(());
+        }
+
+        // Compaction could not free anything — a tripped circuit breaker, or a
+        // summary call that failed too. Report the readable limit rather than
+        // letting the provider's own wording reach a user who cannot act on it.
+        Err(AgentError::ContextTooLong {
+            input_tokens: self.compact_state.last_input_tokens,
+            limit: emergency_limit(&self.compact_config),
+        })
     }
 
     /// A tool call (e.g. a large `Write`) was still streaming when the output
@@ -1339,6 +1415,59 @@ impl AgentEngine {
         }
     }
 
+    /// Summarize the conversation now, whatever the threshold says.
+    ///
+    /// Shared by the scheduled autocompact pass and by overflow recovery, which
+    /// needs to compact on evidence from the provider rather than on the local
+    /// estimate that just proved wrong. Returns whether the history actually
+    /// shrank; a tripped circuit breaker or a failed summary both report false
+    /// and leave the messages untouched.
+    async fn compact_now(&mut self) -> bool {
+        if self.compact_state.is_circuit_broken(&self.compact_config) {
+            return false;
+        }
+        let provider = Arc::clone(&self.provider);
+        let mut compact_messages = self.messages.clone();
+        project_image_input(&mut compact_messages, self.compat.image_input(), &self.model);
+        match autocompact(
+            provider.as_ref(),
+            &compact_messages,
+            &self.model,
+            &self.compact_config,
+            &mut self.compact_state,
+        )
+        .await
+        {
+            Ok(result) => {
+                self.output.emit_info_coded(
+                    "AUTOCOMPACT_DONE",
+                    serde_json::json!({
+                        "count": result.messages_summarized,
+                        "tokens": result.pre_compact_tokens,
+                    }),
+                    &format!(
+                        "Autocompact: summarized {} message(s) ({} tokens → compact)",
+                        result.messages_summarized, result.pre_compact_tokens
+                    ),
+                );
+                self.messages = result.messages;
+                self.context_state.record_compact();
+                self.refresh_local_context_estimate();
+                self.save_session();
+                true
+            }
+            Err(CompactError::CircuitBroken { .. }) => {
+                // Already tripped; logged at circuit-breaker level
+                false
+            }
+            Err(e) => {
+                warn!(target: "dream_engine_agent", error = %e, "autocompact failed");
+                self.output.emit_error(&format!("Autocompact failed: {}", e));
+                false
+            }
+        }
+    }
+
     /// Run context compaction guards before each API call.
     ///
     /// Execution order: optional legacy microcompact → autocompact → emergency check.
@@ -1377,44 +1506,7 @@ impl AgentEngine {
             );
         }
         if should_compact && !self.compact_state.is_circuit_broken(&self.compact_config) {
-            let provider = Arc::clone(&self.provider);
-            let mut compact_messages = self.messages.clone();
-            project_image_input(&mut compact_messages, self.compat.image_input(), &self.model);
-            match autocompact(
-                provider.as_ref(),
-                &compact_messages,
-                &self.model,
-                &self.compact_config,
-                &mut self.compact_state,
-            )
-            .await
-            {
-                Ok(result) => {
-                    self.output.emit_info_coded(
-                        "AUTOCOMPACT_DONE",
-                        serde_json::json!({
-                            "count": result.messages_summarized,
-                            "tokens": result.pre_compact_tokens,
-                        }),
-                        &format!(
-                            "Autocompact: summarized {} message(s) ({} tokens → compact)",
-                            result.messages_summarized, result.pre_compact_tokens
-                        ),
-                    );
-                    self.messages = result.messages;
-                    self.context_state.record_compact();
-                    self.refresh_local_context_estimate();
-                    self.save_session();
-                    compacted = true;
-                }
-                Err(CompactError::CircuitBroken { .. }) => {
-                    // Already tripped; logged at circuit-breaker level
-                }
-                Err(e) => {
-                    warn!(target: "dream_engine_agent", error = %e, "autocompact failed");
-                    self.output.emit_error(&format!("Autocompact failed: {}", e));
-                }
-            }
+            compacted = self.compact_now().await;
         } else if should_compact {
             self.output.emit_info_coded(
                 "AUTOCOMPACT_CIRCUIT_BROKEN",
@@ -1453,6 +1545,20 @@ impl AgentEngine {
         }
 
         Ok(())
+    }
+}
+
+/// The provider's own words, when a failed turn was a context overflow.
+///
+/// Two shapes reach here for the same condition: a typed
+/// [`ProviderError::PromptTooLong`] when the request is rejected outright, and
+/// a bare string when a gateway reports it mid-stream, where the SSE error
+/// frame has already lost the typing.
+fn context_overflow_message(error: &AgentError) -> Option<String> {
+    match error {
+        AgentError::Provider(ProviderError::PromptTooLong(message)) => Some(message.clone()),
+        AgentError::ApiError(message) if is_context_overflow(message) => Some(message.clone()),
+        _ => None,
     }
 }
 
