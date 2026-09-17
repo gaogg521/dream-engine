@@ -1027,13 +1027,33 @@ impl AgentEngine {
             );
         }
 
-        if self.compact_now().await {
-            return Ok(());
+        match self.compact_now().await {
+            CompactOutcome::Compacted => return Ok(()),
+            // The summary call did not fit either. That means no prompt built
+            // from this history fits — a single message larger than the whole
+            // window, typically a pasted document — and truncating the oldest
+            // messages cannot help when there is only one. Say that, because
+            // "compact the conversation" is advice the user cannot act on here.
+            CompactOutcome::Failed(CompactError::PromptTooLong { .. }) => {
+                self.output.emit_info_coded(
+                    "MESSAGE_LARGER_THAN_WINDOW",
+                    serde_json::json!({ "tokens": self.compact_config.context_window }),
+                    &format!(
+                        "A single message is larger than this model's {} token context window.                          Split it up, or switch to a model with a larger window.",
+                        self.compact_config.context_window
+                    ),
+                );
+            }
+            CompactOutcome::Failed(error) => self.output.emit_info_coded(
+                "AUTOCOMPACT_FAILED",
+                serde_json::json!({}),
+                &format!("Autocompact failed ({error}). Use /compact or start a new conversation."),
+            ),
+            CompactOutcome::CircuitBroken => {}
         }
 
-        // Compaction could not free anything — a tripped circuit breaker, or a
-        // summary call that failed too. Report the readable limit rather than
-        // letting the provider's own wording reach a user who cannot act on it.
+        // Nothing could be freed. Report the readable limit rather than letting
+        // the provider's own wording reach a user who cannot act on it.
         Err(AgentError::ContextTooLong {
             input_tokens: self.compact_state.last_input_tokens,
             limit: emergency_limit(&self.compact_config),
@@ -1461,12 +1481,15 @@ impl AgentEngine {
     ///
     /// Shared by the scheduled autocompact pass and by overflow recovery, which
     /// needs to compact on evidence from the provider rather than on the local
-    /// estimate that just proved wrong. Returns whether the history actually
-    /// shrank; a tripped circuit breaker or a failed summary both report false
-    /// and leave the messages untouched.
-    async fn compact_now(&mut self) -> bool {
+    /// estimate that just proved wrong.
+    ///
+    /// Reports *why* it could not compact rather than a bare false: the two
+    /// callers owe the user different things. Recovery already knows the model
+    /// is out of room and can say something actionable about it, while the
+    /// scheduled pass has no such context and has to report the failure itself.
+    async fn compact_now(&mut self) -> CompactOutcome {
         if self.compact_state.is_circuit_broken(&self.compact_config) {
-            return false;
+            return CompactOutcome::CircuitBroken;
         }
         let provider = Arc::clone(&self.provider);
         let mut compact_messages = self.messages.clone();
@@ -1496,16 +1519,15 @@ impl AgentEngine {
                 self.context_state.record_compact();
                 self.refresh_local_context_estimate();
                 self.save_session();
-                true
+                CompactOutcome::Compacted
             }
             Err(CompactError::CircuitBroken { .. }) => {
                 // Already tripped; logged at circuit-breaker level
-                false
+                CompactOutcome::CircuitBroken
             }
-            Err(e) => {
-                warn!(target: "dream_engine_agent", error = %e, "autocompact failed");
-                self.output.emit_error(&format!("Autocompact failed: {}", e));
-                false
+            Err(error) => {
+                warn!(target: "dream_engine_agent", error = %error, "autocompact failed");
+                CompactOutcome::Failed(error)
             }
         }
     }
@@ -1548,7 +1570,18 @@ impl AgentEngine {
             );
         }
         if should_compact && !self.compact_state.is_circuit_broken(&self.compact_config) {
-            compacted = self.compact_now().await;
+            match self.compact_now().await {
+                CompactOutcome::Compacted => compacted = true,
+                CompactOutcome::CircuitBroken => {}
+                // Nothing here knows why the context is full, so the only
+                // honest thing to report is that the automatic pass did not
+                // work and the manual one is still available.
+                CompactOutcome::Failed(error) => self.output.emit_info_coded(
+                    "AUTOCOMPACT_FAILED",
+                    serde_json::json!({}),
+                    &format!("Autocompact failed ({error}). Use /compact or start a new conversation."),
+                ),
+            }
         } else if should_compact {
             self.output.emit_info_coded(
                 "AUTOCOMPACT_CIRCUIT_BROKEN",
@@ -1599,6 +1632,18 @@ impl AgentEngine {
 /// worth having and lets the overflow path handle the case where it truly does
 /// not fit.
 const MIN_OUTPUT_TOKENS: u32 = 1024;
+
+/// Why a compaction attempt did or did not shrink the history.
+///
+/// A bare bool forced both callers into the same message, and they are not in
+/// the same position: overflow recovery knows the model is out of room and can
+/// name the cause, the scheduled pass cannot.
+enum CompactOutcome {
+    Compacted,
+    /// Too many consecutive failures; already reported at the breaker.
+    CircuitBroken,
+    Failed(CompactError),
+}
 
 /// The provider's own words, when a failed turn was a context overflow.
 ///
