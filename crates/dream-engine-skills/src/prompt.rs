@@ -12,7 +12,12 @@ use crate::types::{SkillMetadata, SkillSource};
 // three-level degradation still protects small windows.
 pub const SKILL_BUDGET_CONTEXT_PERCENT: f64 = 0.02;
 pub const CHARS_PER_TOKEN: usize = 4;
-pub const DEFAULT_CHAR_BUDGET: usize = 16_000; // Fallback: 2% of 200k × 4
+/// Fixed fallback for when the caller passes no context window. Deliberately
+/// NOT "2% of 200k × 4" (= 16_000 only by coincidence of those inputs): the
+/// value is pinned at 16k characters regardless of what the model advertises
+/// (`bootstrap.rs` passes `None` here), so do not re-derive it from the
+/// percent constants above.
+pub const DEFAULT_CHAR_BUDGET: usize = 16_000;
 pub const MAX_LISTING_DESC_CHARS: usize = 250;
 
 const MIN_DESC_LENGTH: usize = 20;
