@@ -1099,10 +1099,15 @@ impl AgentEngine {
             truncated_tool_calls = names.len(),
             "tool call(s) truncated mid-stream by the output limit; retrying with tools enabled"
         );
-        self.output.emit_info(&format!(
+        let fallback = format!(
             "Tool call(s) {} were cut off by the output limit before completing; nothing was executed. Retrying now.",
             names.join(", ")
-        ));
+        );
+        self.output.emit_info_coded(
+            "TRUNCATED_TOOL_CALL_RETRY",
+            serde_json::json!({ "names": names.join(", ") }),
+            &fallback,
+        );
 
         let content = build_truncated_assistant_content(&outcome);
         if !content.is_empty() {
