@@ -1061,12 +1061,18 @@ pub fn init_config() -> anyhow::Result<()> {
     let path = global_config_path();
     if path.exists() {
         tracing::info!(target: "dream_engine_config", path = %path.display(), "config file already exists");
+        // Even when we don't touch the content, re-tighten permissions so a
+        // config file left over-permissive by an older build (which may by
+        // now hold a user-added api_key) gets locked down here too, not
+        // only on fresh creation.
+        crate::fs_perms::restrict_to_owner(&path)?;
         return Ok(());
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&path, DEFAULT_CONFIG_TEMPLATE)?;
+    crate::fs_perms::restrict_to_owner(&path)?;
     tracing::info!(target: "dream_engine_config", path = %path.display(), "config file created");
     Ok(())
 }

@@ -41,6 +41,55 @@ mod tests {
         assert!(diff <= 1, "expires_at mismatch: diff={diff}s");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_save_credentials_restricts_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let manager = test_manager(tmp.path());
+        let creds = make_credentials(1);
+
+        manager.save_credentials(&creds).unwrap();
+
+        let mode = std::fs::metadata(&manager.credentials_path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "credentials file must be owner-only readable/writable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_save_credentials_tightens_preexisting_loose_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let manager = test_manager(tmp.path());
+
+        // Simulate a credentials file written by an older build before this
+        // hardening existed: it already sits on disk, world-readable.
+        std::fs::write(&manager.credentials_path, "{}").unwrap();
+        std::fs::set_permissions(&manager.credentials_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let creds = make_credentials(1);
+        manager.save_credentials(&creds).unwrap();
+
+        let mode = std::fs::metadata(&manager.credentials_path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "an update to a pre-existing, over-permissive credentials file must still end up owner-only"
+        );
+    }
+
     #[tokio::test]
     async fn test_has_credentials_false_when_empty() {
         let tmp = TempDir::new().unwrap();

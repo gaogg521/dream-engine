@@ -5,6 +5,7 @@ pub mod compact;
 pub mod compat;
 pub mod config;
 pub mod file_cache;
+pub mod fs_perms;
 pub mod hooks;
 pub mod logging;
 pub mod plan;

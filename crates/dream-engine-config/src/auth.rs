@@ -249,6 +249,11 @@ impl OAuthManager {
         }
         let json = serde_json::to_string_pretty(creds)?;
         std::fs::write(&self.credentials_path, json)?;
+        // Re-applied on every save (not just on first creation) so a
+        // pre-existing credentials file left over-permissive by an older
+        // build gets locked down the next time it is written, e.g. on
+        // token refresh.
+        crate::fs_perms::restrict_to_owner(&self.credentials_path)?;
         Ok(())
     }
 
