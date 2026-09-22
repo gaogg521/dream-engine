@@ -168,4 +168,6 @@ Provider defaults: **Anthropic/Vertex** — alternation, merge, auto tool ID; **
 
 ## License
 
-Apache-2.0
+Copyright (c) 2026 One Work. All Rights Reserved.
+
+本软件为专有软件，未经书面许可不得复制、修改或分发。

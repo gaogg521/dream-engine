@@ -20,7 +20,7 @@ members = [
 [workspace.package]
 version = "0.2.11"
 edition = "2024"
-license = "Apache-2.0"
+license = "LicenseRef-All-Rights-Reserved"
 repository = "https://github.com/gaogg521/dream-engine"
 
 [workspace.dependencies]
