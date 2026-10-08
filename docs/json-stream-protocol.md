@@ -306,6 +306,43 @@ Response to a `ping` command from the client. Used for heartbeat/liveness detect
 
 No additional fields. The agent emits `pong` immediately upon receiving a `ping` command, regardless of whether a message turn is active.
 
+### 1.15 `ask_user`
+
+Emitted while the `AskUserQuestion` tool runs: the agent asks the user one to
+four structured questions and **blocks** until the client answers with
+`ask_user_answer`. The tool never goes through `tool_request` approval — the
+question itself is the user interaction — and no session mode auto-answers it.
+
+```json
+{
+  "type": "ask_user",
+  "request_id": "0199a1c2-...",
+  "questions": [
+    {
+      "question": "Who is the main audience?",
+      "header": "Audience",
+      "options": [
+        { "label": "Singles (Recommended)", "description": "Dating-oriented tests" },
+        { "label": "Couples" }
+      ],
+      "multiSelect": false
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `request_id` | string | Correlation id for the answer |
+| `questions[].question` | string | Full question text; answers are keyed by it |
+| `questions[].header` | string? | Short chip label |
+| `questions[].options` | object[] | 2-4 options (`label`, optional `description`) |
+| `questions[].multiSelect` | bool | Several options may be chosen (`multi_select` is accepted on input) |
+
+Clients should also offer free-text input; a free-text answer is sent as a label.
+If the turn is stopped before the answer arrives, the question is withdrawn and
+a late answer is ignored.
+
 ## 2. Client → Agent Commands (stdin)
 
 Every line is a JSON object with a `type` field.
@@ -503,6 +540,23 @@ After the first `message`, any further `add_mcp_server` commands are rejected:
   }
 }
 ```
+
+### 2.10 `ask_user_answer`
+
+Answers a pending `ask_user` event.
+
+```json
+{
+  "type": "ask_user_answer",
+  "request_id": "0199a1c2-...",
+  "answers": [{ "question": "Who is the main audience?", "labels": ["Singles (Recommended)"] }]
+}
+```
+
+Send `{"type":"ask_user_answer","request_id":"...","decline":true}` when the user
+dismisses the dialog; the agent then continues with its own defaults. Answer every
+question in one command — a question missing from `answers` is reported to the
+model as unanswered.
 
 ## 3. Lifecycle
 

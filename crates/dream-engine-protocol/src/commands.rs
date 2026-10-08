@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use dream_engine_types::message::ImageInputCapability;
 use serde::Deserialize;
 
+use crate::ask::AskAnswer;
+
 /// Commands sent from the client to the agent (Client -> Agent)
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(tag = "type")]
@@ -24,6 +26,15 @@ pub enum ProtocolCommand {
         call_id: String,
         #[serde(default)]
         reason: String,
+    },
+    /// Answer to an `ask_user` event. `decline: true` means the user dismissed
+    /// the question; otherwise `answers` carries one entry per question.
+    AskUserAnswer {
+        request_id: String,
+        #[serde(default)]
+        answers: Vec<AskAnswer>,
+        #[serde(default)]
+        decline: bool,
     },
     InitHistory {
         text: String,

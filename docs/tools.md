@@ -13,6 +13,7 @@ The agent includes a core local tool suite and agent-level helpers. The LLM auto
 | **ViewImage** | Load a local JPEG, PNG, GIF, or WebP image for model inspection | Yes |
 | **Spawn** | Spawn sub-agents for parallel tasks | No |
 | **ToolSearch** | Load schemas for deferred tools | Yes |
+| **AskUserQuestion** | Ask the user structured multiple-choice questions (host integrations only) | No |
 
 ---
 
@@ -83,6 +84,10 @@ Load full schemas for deferred tools so the LLM can invoke them. Deferred bundle
 
 - Search by tool name or a keyword from its description
 - Returns the full schemas of all matching deferred tools
+
+## AskUserQuestion
+
+Asks the user one to four multiple-choice questions in a single host dialog and waits for the answers. Registered only by hosts that can render the dialog (the JSON stream mode and embedded backends), never in the terminal REPL. It skips the approval prompt, because the question itself is the user interaction, and no session mode answers it automatically. The tool description and the system prompt steer the model to use it only when genuinely blocked, and to batch its questions instead of asking one per turn. Wire format: [`ask_user` / `ask_user_answer`](json-stream-protocol.md#115-ask_user).
 
 Skills are exposed through the **Skill** tool. When plan mode is enabled, **EnterPlanMode** and **ExitPlanMode** are also registered. See [Skills](skills.md) and [Plan Mode](advanced.md#plan-mode) for details.
 

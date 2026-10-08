@@ -1081,4 +1081,30 @@ mod tests {
             "toon_disabled should not inject TOON format instructions"
         );
     }
+
+    #[test]
+    fn working_style_sits_between_tool_guidance_and_custom_prompt() {
+        let result = build_system_prompt(
+            &mut SystemPromptCache::new(),
+            Some("CUSTOM_MARKER_STYLE"),
+            "/tmp",
+            "test-model",
+            &[],
+            None,
+            None,
+            false,
+            false,
+        );
+        let guidance_pos = result.find("# Using your tools").unwrap();
+        let style_pos = result.find("# Doing tasks").unwrap();
+        let custom_pos = result.find("CUSTOM_MARKER_STYLE").unwrap();
+        assert!(guidance_pos < style_pos, "working style follows tool guidance");
+        // An assistant preset must be able to override the default style.
+        assert!(style_pos < custom_pos, "working style precedes the custom prompt");
+        assert!(
+            result.contains("AskUserQuestion"),
+            "asking must be routed to the structured tool"
+        );
+        assert!(result.contains("never one question per turn"));
+    }
 }

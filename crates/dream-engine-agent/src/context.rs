@@ -149,16 +149,28 @@ tried."
     guidance.join("\n")
 }
 
+/// Default working style: deliver results instead of interviewing the user.
+///
+/// Placed before the custom prompt so an assistant preset that genuinely wants
+/// an interview-style flow can still override it.
+const WORKING_STYLE_GUIDANCE: &str = "# Doing tasks
+ - Users want results, not a conversation about the work. Infer the intent behind the request from its wording, the conversation and the workspace, then carry the task through to a finished deliverable in this turn.
+ - When details are unspecified, choose sensible, conventional defaults and keep going. Briefly state the key assumptions in your final answer so the user can adjust them, instead of asking first.
+ - Ask the user only when you are genuinely blocked: the missing information materially changes the result, cannot be inferred, and a wrong guess would be expensive to undo (destructive or irreversible actions, spending money, contacting people). When you must ask, ask everything you need at once - with the AskUserQuestion tool when it is available - never one question per turn, and never as a lettered or numbered option list in plain text that waits for the user to type a choice.
+ - Do not stop midway to report progress and ask whether to continue. Do not end your reply with a menu of possible next steps or a \"Shall I ...?\" when the next step is obvious - do it. A one-line note of what is left, if anything, is enough.
+ - If the user explicitly asks to be consulted, to answer questions first, or to review a plan before you act, follow that instead.";
+
 /// Build the system prompt from config and environment.
 ///
 /// Sections are assembled in this order:
 /// 1. Base intro (role, model identity, working directory, date)
 /// 2. Tool usage guidance (dedicated tools, parallel calls, etc.)
-/// 3. Custom prompt (user config)
-/// 4. AGENTS.md (project instructions)
-/// 5. Memory system prompt (behavioral instructions + MEMORY.md content)
-/// 6. Plan mode instructions (when active)
-/// 7. Skills reminder (available skills listing)
+/// 3. Working style (deliver results, ask only when blocked)
+/// 4. Custom prompt (user config)
+/// 5. AGENTS.md (project instructions)
+/// 6. Memory system prompt (behavioral instructions + MEMORY.md content)
+/// 7. Plan mode instructions (when active)
+/// 8. Skills reminder (available skills listing)
 ///
 /// Session-permanent sections (intro, tool guidance, custom prompt, AGENTS.md)
 /// are cached in `cache.sections` and reused across calls. The `joined` field
@@ -282,6 +294,9 @@ pub(crate) fn build_system_prompt_with_shell_and_tool_policy(
         .entry("tool_guidance")
         .or_insert_with(|| tool_usage_guidance(tool_policy));
     parts.push(guidance.clone());
+
+    // Section: working style (static)
+    parts.push(WORKING_STYLE_GUIDANCE.to_string());
 
     // Section: custom prompt (session permanent)
     if let Some(custom) = custom_prompt {

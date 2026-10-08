@@ -97,6 +97,13 @@ pub trait Tool: Send + Sync {
     /// Tool category for protocol classification
     fn category(&self) -> ToolCategory;
 
+    /// Whether a host approval prompt must precede execution (subject to the
+    /// session mode and allow lists). Tools whose execution *is* a user
+    /// interaction, such as asking the user a question, opt out.
+    fn requires_approval(&self) -> bool {
+        true
+    }
+
     /// Whether this tool's schema should be deferred (sent as name-only stub).
     /// Override to `true` for tools with large schemas or infrequent use.
     fn is_deferred(&self) -> bool {

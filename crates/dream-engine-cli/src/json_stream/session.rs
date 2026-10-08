@@ -9,13 +9,14 @@
 
 use std::sync::Arc;
 
+use dream_engine_agent::ask_user_tool::AskUserTool;
 use dream_engine_agent::output::OutputSink;
 use dream_engine_agent::output::protocol_sink::ProtocolSink;
 use dream_engine_config::config::Config;
-use dream_engine_protocol::ToolApprovalManager;
 use dream_engine_protocol::commands::ProtocolCommand;
 use dream_engine_protocol::reader::spawn_stdin_reader;
 use dream_engine_protocol::writer::ProtocolWriter;
+use dream_engine_protocol::{AskUserManager, ToolApprovalManager};
 
 use super::context::StreamContext;
 use super::dispatch::DispatchOutcome;
@@ -35,6 +36,7 @@ pub(crate) async fn run(
     let writer = Arc::new(ProtocolWriter::new());
     let protocol_sink = Arc::new(ProtocolSink::new(writer.clone()));
     let approval_manager = Arc::new(ToolApprovalManager::new());
+    let ask_manager = Arc::new(AskUserManager::new());
     let output: Arc<dyn OutputSink> = protocol_sink.clone();
 
     let provider_name = config.provider_label.clone();
@@ -63,6 +65,9 @@ pub(crate) async fn run(
 
     engine.set_approval_manager(approval_manager.clone());
     engine.set_protocol_writer(writer.clone());
+    engine
+        .registry_mut()
+        .register(Box::new(AskUserTool::new(ask_manager.clone(), writer.clone())));
 
     let mut cmd_rx = spawn_stdin_reader();
 
@@ -80,6 +85,7 @@ pub(crate) async fn run(
         output: output.clone(),
         writer: writer.clone(),
         approval_manager: approval_manager.clone(),
+        ask_manager,
         protocol_sink: protocol_sink.clone(),
         has_mcp,
     };

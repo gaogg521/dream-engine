@@ -377,7 +377,8 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
         let description = tool.map(|t| t.describe(input)).unwrap_or_default();
 
         // Check if approval is needed
-        let needs_approval = !auto_approve
+        let needs_approval = tool.is_none_or(|t| t.requires_approval())
+            && !auto_approve
             && !allow_list.contains(&name.to_string())
             && !approval_manager.is_auto_approved(&category.to_string());
 

@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use dream_engine_agent::output::OutputSink;
 use dream_engine_agent::output::protocol_sink::ProtocolSink;
-use dream_engine_protocol::ToolApprovalManager;
 use dream_engine_protocol::writer::ProtocolWriter;
+use dream_engine_protocol::{AskUserManager, ToolApprovalManager};
 
 /// Protocol I/O handles shared across top-level command dispatch and
 /// in-flight message handling.
@@ -21,6 +21,7 @@ pub(super) struct StreamContext {
     pub(super) output: Arc<dyn OutputSink>,
     pub(super) writer: Arc<ProtocolWriter>,
     pub(super) approval_manager: Arc<ToolApprovalManager>,
+    pub(super) ask_manager: Arc<AskUserManager>,
     pub(super) protocol_sink: Arc<ProtocolSink>,
     pub(super) has_mcp: bool,
 }

@@ -5,10 +5,10 @@
 //! phase (handled in `pre_message.rs` before this loop starts).
 
 use dream_engine_agent::engine::AgentEngine;
-use dream_engine_protocol::ToolApprovalResult;
 use dream_engine_protocol::commands::ProtocolCommand;
 use dream_engine_protocol::events::ProtocolEvent;
 use dream_engine_protocol::writer::ProtocolEmitter;
+use dream_engine_protocol::{AskAnswer, AskUserOutcome, ToolApprovalResult};
 
 use super::context::StreamContext;
 
@@ -33,6 +33,11 @@ pub(super) fn handle(cmd: ProtocolCommand, engine: &mut AgentEngine, ctx: &Strea
             ctx.approval_manager
                 .resolve(&call_id, ToolApprovalResult::Denied { reason });
         }
+        ProtocolCommand::AskUserAnswer {
+            request_id,
+            answers,
+            decline,
+        } => answer_question(ctx, &request_id, answers, decline),
         ProtocolCommand::InitHistory { text } => {
             tracing::debug!(target: "dream_engine_protocol", chars = text.len(), "InitHistory received");
         }
@@ -88,4 +93,16 @@ pub(super) fn handle(cmd: ProtocolCommand, engine: &mut AgentEngine, ctx: &Strea
     }
 
     DispatchOutcome::Continue
+}
+
+/// Deliver the host's answer to a pending `ask_user` question.
+pub(super) fn answer_question(ctx: &StreamContext, request_id: &str, answers: Vec<AskAnswer>, decline: bool) {
+    let outcome = if decline {
+        AskUserOutcome::Declined
+    } else {
+        AskUserOutcome::Answered(answers)
+    };
+    if !ctx.ask_manager.resolve(request_id, outcome) {
+        tracing::warn!(target: "dream_engine_protocol", request_id, "ask_user_answer for a question that is no longer pending");
+    }
 }

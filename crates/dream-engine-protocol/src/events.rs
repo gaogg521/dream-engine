@@ -2,6 +2,8 @@ use dream_engine_types::message::ImageInputCapability;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::ask::AskQuestion;
+
 /// Events emitted by the agent to the client (Agent -> Client)
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
@@ -48,6 +50,12 @@ pub enum ProtocolEvent {
         msg_id: String,
         call_id: String,
         reason: String,
+    },
+    /// The agent asks the user structured questions and blocks until the host
+    /// answers with `ask_user_answer` (keyed by the same `request_id`).
+    AskUser {
+        request_id: String,
+        questions: Vec<AskQuestion>,
     },
     StreamEnd {
         msg_id: String,

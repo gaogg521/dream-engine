@@ -15,6 +15,7 @@ use dream_engine_types::message::ImageInputCapability;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::context::StreamContext;
+use super::dispatch::answer_question;
 
 /// Pending config fields queued via `SetConfig` while a message is in
 /// flight.
@@ -73,6 +74,9 @@ pub(super) async fn handle(
                         }
                         ProtocolCommand::ToolDeny { call_id, reason } => {
                             ctx.approval_manager.resolve(&call_id, ToolApprovalResult::Denied { reason });
+                        }
+                        ProtocolCommand::AskUserAnswer { request_id, answers, decline } => {
+                            answer_question(ctx, &request_id, answers, decline);
                         }
                         ProtocolCommand::Stop => {
                             stopped = true;
