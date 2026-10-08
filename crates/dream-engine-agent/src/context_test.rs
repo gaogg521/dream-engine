@@ -1106,7 +1106,8 @@ mod tests {
             "asking must be routed to the structured tool"
         );
         assert!(result.contains("never one question per turn"));
-        // Users complained about replies that end in "what next?" menus.
-        assert!(result.contains("Never close with a numbered menu of follow-up options"));
+        // Closing suggestions are welcome, but only after the work is done.
+        assert!(result.contains("Deliver first, suggest second"));
+        assert!(result.contains("must never be a precondition"));
     }
 }

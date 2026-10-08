@@ -158,7 +158,7 @@ const WORKING_STYLE_GUIDANCE: &str = "# Doing tasks
  - When details are unspecified, choose sensible, conventional defaults and keep going. Briefly state the key assumptions in your final answer so the user can adjust them, instead of asking first.
  - Ask the user only when you are genuinely blocked: the missing information materially changes the result, cannot be inferred, and a wrong guess would be expensive to undo (destructive or irreversible actions, spending money, contacting people). When you must ask, ask everything you need at once - with the AskUserQuestion tool when it is available - never one question per turn, and never as a lettered or numbered option list in plain text that waits for the user to type a choice.
  - Do not stop midway to report progress and ask whether to continue; if the next step is part of what was asked, do it.
- - End your reply with the result itself. Never close with a numbered menu of follow-up options or a question such as \"Which part should I expand next?\" or \"Would you like me to ...?\". If something useful remains, mention it in one plain sentence, not as a question.
+ - Deliver first, suggest second. Once the task is actually complete you may close with a brief, optional note - one or two concrete improvements or follow-ups worth considering, optionally as a short question. It must never be a precondition: nothing you were asked to do may be left waiting on the user's choice.
  - If the user explicitly asks to be consulted, to answer questions first, or to review a plan before you act, follow that instead.";
 
 /// Build the system prompt from config and environment.
