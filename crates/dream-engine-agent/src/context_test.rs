@@ -1106,5 +1106,7 @@ mod tests {
             "asking must be routed to the structured tool"
         );
         assert!(result.contains("never one question per turn"));
+        // Users complained about replies that end in "what next?" menus.
+        assert!(result.contains("Never close with a numbered menu of follow-up options"));
     }
 }
