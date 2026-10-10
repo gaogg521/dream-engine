@@ -497,7 +497,13 @@ impl AgentEngine {
             session_id = %session_id,
             msg_id = %msg_id,
         );
-        self.run_inner(content_blocks, msg_id).instrument(span).await
+        // The inbox is open for exactly the span of a run. A normal finish
+        // closes it atomically (see the `Final` arm of `run_inner`); every
+        // other way out leaves it open, and this keeps what it still holds.
+        self.pending_input.open();
+        let result = self.run_inner(content_blocks, msg_id).instrument(span).await;
+        self.close_pending_input();
+        result
     }
 
     /// Set the turn id for the NEXT run. Hosts that mint their own turn ids
@@ -515,19 +521,20 @@ impl AgentEngine {
     /// Handle to this engine's mid-run input inbox.
     ///
     /// The host keeps a clone so it can push user messages without the engine
-    /// lock, which `run()` holds for the whole run. The host opens the inbox
-    /// when a run starts and closes it with [`PendingInput::close_if_empty`]
-    /// when the run returns, running again if that refuses.
+    /// lock, which `run()` holds for the whole run. The engine opens the inbox
+    /// when a run starts and closes it when the run ends, so a push the inbox
+    /// refuses means "no run to join, start a new one".
     pub fn pending_input(&self) -> PendingInput {
         self.pending_input.clone()
     }
 
     /// Close the inbox and keep whatever is still in it as history.
     ///
-    /// For a run that ended without answering — cancelled or failed. The
-    /// messages were accepted, so dropping them would lose what the user said;
-    /// recorded as history, the model sees them on the next run.
-    pub fn close_pending_input(&mut self) {
+    /// For a run that ended without answering — cancelled, failed, or stopped
+    /// by a guard. The messages were accepted, so dropping them would lose
+    /// what the user said; recorded as history, the model sees them on the
+    /// next run.
+    fn close_pending_input(&mut self) {
         let leftover = self.pending_input.close_and_drain();
         self.fold_into_history(leftover);
     }
@@ -620,8 +627,10 @@ impl AgentEngine {
                     self.save_session();
                     // The user spoke while this answer was being written. It
                     // was not part of the request, so the run is not done:
-                    // take another turn to answer it.
-                    if !self.pending_input.is_empty() {
+                    // take another turn to answer it. Closing in the same
+                    // step as the check is what keeps a message from landing
+                    // after this look and before the run is reported over.
+                    if !self.pending_input.close_if_empty() {
                         continue;
                     }
                     return Ok(AgentResult {
@@ -2053,7 +2062,15 @@ impl AgentEngine {
     /// `run()` while tools are executing, the assistant `tool_use` message may
     /// already be in memory without its matching results. Add synthetic error
     /// results so the next request can safely reuse this history.
+    ///
+    /// Also closes the mid-run inbox, keeping anything the user had already
+    /// sent as history (after the synthetic results, which must come first).
     pub fn abort_current_turn(&mut self, reason: &str) {
+        self.close_orphan_tool_uses(reason);
+        self.close_pending_input();
+    }
+
+    fn close_orphan_tool_uses(&mut self, reason: &str) {
         let Some(last_message) = self.messages.last() else {
             return;
         };

@@ -2341,7 +2341,6 @@ mod tests_handle_command {
         engine
             .tools
             .register(Box::new(InboxPushingTool { inbox: inbox.clone() }));
-        inbox.open();
 
         let result = engine.run("fix the bug", "msg-midrun").await.unwrap();
 
@@ -2361,8 +2360,10 @@ mod tests_handle_command {
             injected_at > tool_result_at,
             "the user's message follows the tool result it interrupted"
         );
-        assert!(inbox.is_empty());
-        assert!(inbox.close_if_empty(), "nothing left once the run has answered it");
+        assert!(
+            !inbox.push(text_blocks("after the run")),
+            "a finished run must refuse input so the host starts a new one"
+        );
     }
 
     #[tokio::test]
@@ -2372,7 +2373,6 @@ mod tests_handle_command {
         engine.max_turns_per_run = Some(10);
         let inbox = engine.pending_input();
         *provider.inbox.lock().unwrap() = Some(inbox.clone());
-        inbox.open();
 
         let result = engine.run("first question", "msg-final").await.unwrap();
 
@@ -2401,16 +2401,23 @@ mod tests_handle_command {
     }
 
     #[tokio::test]
-    async fn close_pending_input_keeps_leftovers_as_history() {
+    async fn abort_keeps_input_the_run_never_answered() {
         let mut engine = make_engine_with_provider(Arc::new(SingleResponseProvider));
         let inbox = engine.pending_input();
+        // As if a run were in flight when the host cancelled it.
         inbox.open();
         assert!(inbox.push(text_blocks("said just before stop")));
 
-        engine.close_pending_input();
+        engine.abort_current_turn("Tool execution canceled by user");
 
         assert!(engine.messages.iter().any(|m| is_user_text(m, "said just before stop")));
-        assert!(!inbox.push(text_blocks("after close")), "inbox must be closed");
+        assert!(!inbox.push(text_blocks("after abort")), "inbox must be closed");
+    }
+
+    #[tokio::test]
+    async fn an_idle_engine_refuses_input() {
+        let engine = make_engine_with_provider(Arc::new(SingleResponseProvider));
+        assert!(!engine.pending_input().push(text_blocks("nobody is running")));
     }
 
     #[tokio::test]

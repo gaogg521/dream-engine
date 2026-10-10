@@ -6,13 +6,13 @@
 //! next step boundary: after a tool round, before the next model request, or —
 //! if the model was about to finish — by taking one more turn to answer it.
 //!
-//! The inbox is *gated*. It only accepts input while the host has it open,
-//! which the host does for exactly the span of a run. Closing is atomic with
-//! the emptiness check ([`PendingInput::close_if_empty`]), so a message can
-//! never land after the engine's last look and before the host declares the
-//! run over: either the push wins and the host sees it, or the close wins and
-//! the push is refused — and a refused push is the caller's cue to start a new
-//! run instead.
+//! The inbox is *gated*. It only accepts input while a run is in progress:
+//! the engine opens it when a run starts and closes it when the run ends.
+//! Closing on a normal finish is atomic with the emptiness check
+//! ([`PendingInput::close_if_empty`]), so a message can never land after the
+//! engine's last look and before the run is reported over: either the push
+//! wins and the engine answers it, or the close wins and the push is refused —
+//! and a refused push is the caller's cue to start a new run instead.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -38,7 +38,7 @@ impl PendingInput {
         self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Start accepting input. Called by the host when a run begins.
+    /// Start accepting input. Called by the engine when a run begins.
     pub fn open(&self) {
         self.lock().open = true;
     }
@@ -70,7 +70,7 @@ impl PendingInput {
     ///
     /// Returns `true` when the inbox is now closed. `false` means input
     /// arrived after the engine's last look; the inbox stays open and the
-    /// host must run again to answer it.
+    /// run must go on to answer it.
     pub fn close_if_empty(&self) -> bool {
         let mut state = self.lock();
         if state.queue.is_empty() {
