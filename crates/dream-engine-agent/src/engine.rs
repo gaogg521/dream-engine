@@ -20,6 +20,7 @@ use crate::orchestration::{
     ExecutionControl, execute_tool_calls_with_approval_and_output_limit, execute_tool_calls_with_output_limit,
 };
 use crate::output::OutputSink;
+use crate::pending_input::PendingInput;
 use crate::plan::prompt::plan_mode_instructions;
 use crate::plan::state::PlanState;
 use crate::session::{Session, SessionManager};
@@ -160,6 +161,11 @@ pub struct AgentEngine {
     cache_detector: CacheBreakDetector,
     /// Slash command registry used before normal model execution.
     commands: CommandRegistry,
+
+    // Host integration.
+    /// User messages that arrived while a run was in progress; folded into
+    /// the conversation at the next step boundary. See [`PendingInput`].
+    pending_input: PendingInput,
 }
 
 impl AgentEngine {
@@ -243,6 +249,7 @@ impl AgentEngine {
             plan_active_flag: None,
             cache_detector: CacheBreakDetector::new(),
             commands: default_registry(),
+            pending_input: PendingInput::default(),
         };
         engine.refresh_local_context_estimate();
         engine
@@ -340,6 +347,7 @@ impl AgentEngine {
             plan_active_flag: None,
             cache_detector: CacheBreakDetector::new(),
             commands: default_registry(),
+            pending_input: PendingInput::default(),
         };
         if engine.context_state.context_usage == 0 {
             engine.refresh_local_context_estimate();
@@ -504,6 +512,51 @@ impl AgentEngine {
         self.current_turn_id.as_deref()
     }
 
+    /// Handle to this engine's mid-run input inbox.
+    ///
+    /// The host keeps a clone so it can push user messages without the engine
+    /// lock, which `run()` holds for the whole run. The host opens the inbox
+    /// when a run starts and closes it with [`PendingInput::close_if_empty`]
+    /// when the run returns, running again if that refuses.
+    pub fn pending_input(&self) -> PendingInput {
+        self.pending_input.clone()
+    }
+
+    /// Close the inbox and keep whatever is still in it as history.
+    ///
+    /// For a run that ended without answering — cancelled or failed. The
+    /// messages were accepted, so dropping them would lose what the user said;
+    /// recorded as history, the model sees them on the next run.
+    pub fn close_pending_input(&mut self) {
+        let leftover = self.pending_input.close_and_drain();
+        self.fold_into_history(leftover);
+    }
+
+    /// Fold mid-run user input into history. Returns whether there was any.
+    fn absorb_pending_input(&mut self) -> bool {
+        let pending = self.pending_input.drain();
+        self.fold_into_history(pending)
+    }
+
+    fn fold_into_history(&mut self, pending: Vec<Vec<ContentBlock>>) -> bool {
+        if pending.is_empty() {
+            return false;
+        }
+        info!(
+            target: "dream_engine_agent",
+            count = pending.len(),
+            "folding mid-run user input into the conversation"
+        );
+        for blocks in pending {
+            let tokens = estimate_content_tokens(&blocks);
+            self.push_history(Role::User, blocks);
+            self.record_local_context_addition(tokens);
+        }
+        self.save_session();
+        self.output.emit_user_input_injected();
+        true
+    }
+
     /// Append a message to the conversation history, stamped with the
     /// current run's turn id (the session-side fork anchor).
     fn push_history(&mut self, role: Role, content: Vec<ContentBlock>) {
@@ -547,6 +600,10 @@ impl AgentEngine {
                 });
             }
 
+            // Anything the user said since the last step goes in before the
+            // model is asked again, so this request already answers it.
+            self.absorb_pending_input();
+
             let outcome = self.run_turn(TurnKind::Normal).await?;
             guards.record_counted_turn();
 
@@ -561,6 +618,12 @@ impl AgentEngine {
                     let assistant_content = build_assistant_content(&outcome);
                     self.push_history(Role::Assistant, assistant_content);
                     self.save_session();
+                    // The user spoke while this answer was being written. It
+                    // was not part of the request, so the run is not done:
+                    // take another turn to answer it.
+                    if !self.pending_input.is_empty() {
+                        continue;
+                    }
                     return Ok(AgentResult {
                         text: outcome.assistant_text,
                         stop_reason: outcome.stop_reason,

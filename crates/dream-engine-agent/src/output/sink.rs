@@ -58,6 +58,16 @@ pub trait OutputSink: Send + Sync {
     /// nowhere to put it, and only an embedding host that meters spend cares.
     fn emit_delegate_usage(&self, _model: &str, _usage: &TokenUsage) {}
 
+    /// The user's mid-run message has just been folded into the conversation.
+    ///
+    /// Whatever the model says next answers that message, so a host that
+    /// renders replies as message bubbles should start a new one rather than
+    /// keep appending to the reply that was streaming before the user spoke —
+    /// otherwise the answer shows up *above* the question it answers.
+    ///
+    /// Defaults to nothing: a terminal prints in order already.
+    fn emit_user_input_injected(&self) {}
+
     /// Display error
     fn emit_error(&self, msg: &str);
 

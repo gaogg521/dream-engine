@@ -13,6 +13,7 @@ pub mod engine;
 pub mod error;
 pub mod orchestration;
 pub mod output;
+pub mod pending_input;
 pub mod plan;
 pub mod session;
 pub mod skill_tool;

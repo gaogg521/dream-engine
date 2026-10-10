@@ -82,6 +82,7 @@ mod tests_set_config {
             plan_active_flag: None,
             cache_detector: super::CacheBreakDetector::new(),
             commands: crate::commands::default_registry(),
+            pending_input: crate::pending_input::PendingInput::default(),
         }
     }
 
@@ -478,6 +479,7 @@ mod tests_phase6 {
             plan_active_flag: None,
             cache_detector: super::CacheBreakDetector::new(),
             commands: crate::commands::default_registry(),
+            pending_input: crate::pending_input::PendingInput::default(),
         }
     }
 
@@ -767,6 +769,7 @@ mod tests_compact {
             plan_active_flag: None,
             cache_detector: super::CacheBreakDetector::new(),
             commands: crate::commands::default_registry(),
+            pending_input: crate::pending_input::PendingInput::default(),
         }
     }
 
@@ -1648,6 +1651,7 @@ mod tests_plan_mode {
             plan_active_flag: Some(flag),
             cache_detector: super::CacheBreakDetector::new(),
             commands: crate::commands::default_registry(),
+            pending_input: crate::pending_input::PendingInput::default(),
         }
     }
 
@@ -1812,6 +1816,7 @@ mod tests_handle_command {
     use crate::compact::state::CompactState;
     use crate::confirm::ToolConfirmer;
     use crate::output::OutputSink;
+    use crate::pending_input::PendingInput;
     use crate::turn::TurnKind;
 
     struct NullOutput;
@@ -1872,6 +1877,7 @@ mod tests_handle_command {
             plan_active_flag: None,
             cache_detector: CacheBreakDetector::new(),
             commands: default_registry(),
+            pending_input: PendingInput::default(),
         }
     }
 
@@ -2209,6 +2215,202 @@ mod tests_handle_command {
                 )
             })
         }));
+    }
+
+    // --- mid-run user input ---
+
+    /// Answers with one `SuccessfulTool` call for the first `tool_rounds`
+    /// requests and plain text after that. When `push_during` names a request,
+    /// pushes `late_input` into the inbox while that request is streaming —
+    /// the user typing while the model is mid-answer.
+    struct InboxProvider {
+        requests: Mutex<Vec<LlmRequest>>,
+        tool_rounds: usize,
+        inbox: Mutex<Option<PendingInput>>,
+        push_during: Option<usize>,
+    }
+
+    impl InboxProvider {
+        fn new(tool_rounds: usize, push_during: Option<usize>) -> Self {
+            Self {
+                requests: Mutex::new(Vec::new()),
+                tool_rounds,
+                inbox: Mutex::new(None),
+                push_during,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for InboxProvider {
+        async fn stream(&self, request: &LlmRequest) -> Result<Receiver<LlmEvent>, ProviderError> {
+            let index = {
+                let mut requests = self.requests.lock().unwrap();
+                requests.push(request.clone());
+                requests.len() - 1
+            };
+            if self.push_during == Some(index)
+                && let Some(inbox) = self.inbox.lock().unwrap().as_ref()
+            {
+                assert!(inbox.push(text_blocks("late question")));
+            }
+            let (tx, rx) = channel(4);
+            if index < self.tool_rounds {
+                let _ = tx
+                    .send(LlmEvent::ToolUse {
+                        id: format!("call-{index}"),
+                        name: "SuccessfulTool".to_string(),
+                        input: json!({}),
+                        extra: None,
+                    })
+                    .await;
+                let _ = tx
+                    .send(LlmEvent::Done {
+                        stop_reason: StopReason::ToolUse,
+                        usage: TokenUsage::default(),
+                    })
+                    .await;
+            } else {
+                let _ = tx.send(LlmEvent::TextDelta(format!("answer {index}"))).await;
+                let _ = tx
+                    .send(LlmEvent::Done {
+                        stop_reason: StopReason::EndTurn,
+                        usage: TokenUsage::default(),
+                    })
+                    .await;
+            }
+            Ok(rx)
+        }
+    }
+
+    /// Pushes `late_input` into the inbox while it executes — the user typing
+    /// while a tool runs.
+    struct InboxPushingTool {
+        inbox: PendingInput,
+    }
+
+    #[async_trait]
+    impl Tool for InboxPushingTool {
+        fn name(&self) -> &str {
+            "SuccessfulTool"
+        }
+
+        fn description(&self) -> &str {
+            "pushes a user message into the inbox mid-run"
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({ "type": "object" })
+        }
+
+        fn is_concurrency_safe(&self, _: &Value) -> bool {
+            true
+        }
+
+        async fn execute(&self, _: Value) -> ToolResult {
+            assert!(self.inbox.push(text_blocks("also check the tests")));
+            ToolResult {
+                content: "tool done".to_string(),
+                is_error: false,
+            }
+        }
+
+        fn category(&self) -> ToolCategory {
+            ToolCategory::Info
+        }
+    }
+
+    fn text_blocks(text: &str) -> Vec<ContentBlock> {
+        vec![ContentBlock::Text { text: text.to_string() }]
+    }
+
+    fn is_user_text(message: &Message, expected: &str) -> bool {
+        message.role == Role::User
+            && message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Text { text } if text == expected))
+    }
+
+    #[tokio::test]
+    async fn input_pushed_during_a_tool_reaches_the_next_request() {
+        let provider = Arc::new(InboxProvider::new(1, None));
+        let mut engine = make_engine_with_provider(provider.clone());
+        engine.max_turns_per_run = Some(10);
+        let inbox = engine.pending_input();
+        engine
+            .tools
+            .register(Box::new(InboxPushingTool { inbox: inbox.clone() }));
+        inbox.open();
+
+        let result = engine.run("fix the bug", "msg-midrun").await.unwrap();
+
+        assert_eq!(result.stop_reason, StopReason::EndTurn);
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2, "one tool round, then the answer");
+        let second = &requests[1].messages;
+        let tool_result_at = second
+            .iter()
+            .position(|m| m.content.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. })))
+            .expect("tool result in the follow-up request");
+        let injected_at = second
+            .iter()
+            .position(|m| is_user_text(m, "also check the tests"))
+            .expect("the mid-run message must be in the very next request");
+        assert!(
+            injected_at > tool_result_at,
+            "the user's message follows the tool result it interrupted"
+        );
+        assert!(inbox.is_empty());
+        assert!(inbox.close_if_empty(), "nothing left once the run has answered it");
+    }
+
+    #[tokio::test]
+    async fn input_arriving_while_the_final_answer_streams_gets_its_own_answer() {
+        let provider = Arc::new(InboxProvider::new(0, Some(0)));
+        let mut engine = make_engine_with_provider(provider.clone());
+        engine.max_turns_per_run = Some(10);
+        let inbox = engine.pending_input();
+        *provider.inbox.lock().unwrap() = Some(inbox.clone());
+        inbox.open();
+
+        let result = engine.run("first question", "msg-final").await.unwrap();
+
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(
+            requests.len(),
+            2,
+            "the run must not end on an answer that never saw the late question"
+        );
+        let second = &requests[1].messages;
+        let answer_at = second
+            .iter()
+            .position(|m| {
+                m.role == Role::Assistant
+                    && m.content
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::Text { text } if text == "answer 0"))
+            })
+            .expect("first answer kept in history");
+        let question_at = second
+            .iter()
+            .position(|m| is_user_text(m, "late question"))
+            .expect("late question sent to the model");
+        assert!(question_at > answer_at);
+        assert_eq!(result.text, "answer 1");
+    }
+
+    #[tokio::test]
+    async fn close_pending_input_keeps_leftovers_as_history() {
+        let mut engine = make_engine_with_provider(Arc::new(SingleResponseProvider));
+        let inbox = engine.pending_input();
+        inbox.open();
+        assert!(inbox.push(text_blocks("said just before stop")));
+
+        engine.close_pending_input();
+
+        assert!(engine.messages.iter().any(|m| is_user_text(m, "said just before stop")));
+        assert!(!inbox.push(text_blocks("after close")), "inbox must be closed");
     }
 
     #[tokio::test]
@@ -2922,6 +3124,7 @@ mod tests_tool_policy_enforcement {
             plan_active_flag: None,
             cache_detector: CacheBreakDetector::new(),
             commands: default_registry(),
+            pending_input: crate::pending_input::PendingInput::default(),
         }
     }
 
