@@ -71,6 +71,15 @@ pub struct AgentResult {
 /// still available lets them recover, unlike the tool-less finalization path.
 const EMPTY_FINAL_RETRY_PROMPT: &str = "The previous response contained no visible answer text. Respond again now: provide the answer as visible text, or issue the intended tool call as a proper tool call. Do not leave the answer or tool calls inside reasoning.";
 
+/// Framing put in front of a message the user sent mid-run.
+///
+/// Without it the interjection is just the newest user message, and a model
+/// reads the newest user message as the whole task: asked mid-run for a small
+/// extra, it answered only the extra and dropped the work it was in the middle
+/// of. Kept neutral on purpose — the user may well be redirecting, in which
+/// case their own words say so.
+const MID_RUN_INPUT_NOTE: &str = "[The user sent the message below while you were still working. Take it into account and carry on with the work in progress, unless it tells you to change course.]";
+
 pub struct AgentEngine {
     // Provider request configuration.
     /// Shared LLM provider used to issue model requests.
@@ -555,8 +564,12 @@ impl AgentEngine {
             "folding mid-run user input into the conversation"
         );
         for blocks in pending {
-            let tokens = estimate_content_tokens(&blocks);
-            self.push_history(Role::User, blocks);
+            let mut framed = vec![ContentBlock::Text {
+                text: MID_RUN_INPUT_NOTE.to_string(),
+            }];
+            framed.extend(blocks);
+            let tokens = estimate_content_tokens(&framed);
+            self.push_history(Role::User, framed);
             self.record_local_context_addition(tokens);
         }
         self.save_session();

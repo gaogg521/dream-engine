@@ -2360,6 +2360,11 @@ mod tests_handle_command {
             injected_at > tool_result_at,
             "the user's message follows the tool result it interrupted"
         );
+        let framing = &second[injected_at].content[0];
+        assert!(
+            matches!(framing, ContentBlock::Text { text } if text.contains("while you were still working")),
+            "an interjection must be framed as one, not left looking like a brand-new task: {framing:?}"
+        );
         assert!(
             !inbox.push(text_blocks("after the run")),
             "a finished run must refuse input so the host starts a new one"
