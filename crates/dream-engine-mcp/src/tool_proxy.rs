@@ -158,6 +158,50 @@ fn has_valid_property_keys(schema: &Value) -> bool {
     true
 }
 
+/// Longest function name the OpenAI-compatible APIs accept.
+const MAX_TOOL_NAME_LEN: usize = 64;
+
+/// Shortest slice of the server name kept in a prefix, so a long tool name
+/// cannot squeeze the server out of it entirely.
+const MIN_SERVER_PART_LEN: usize = 4;
+
+/// Stable 32-bit FNV-1a, rendered as 8 hex digits. Not `DefaultHasher`: the
+/// name is part of what the model is shown and must not drift between builds.
+fn short_hash(input: &str) -> String {
+    let hash = input.bytes().fold(0x811c_9dc5_u32, |acc, byte| {
+        (acc ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    format!("{hash:08x}")
+}
+
+/// Name a colliding tool is registered under: `mcp__{server}_{tool}`, with the
+/// server part made safe for the provider API.
+///
+/// Providers accept only `^[a-zA-Z0-9_-]+$` (≤64 chars) as a function name. A
+/// server named after a company system ("企业发布与费用核算") used to be copied
+/// into the prefix verbatim, so one collision made the provider reject every
+/// request of the session with an opaque 400 that named neither the server nor
+/// the tool. Characters outside the allowed set become `_`; when anything was
+/// replaced, an 8-digit hash of the original name is appended so two servers
+/// that sanitize alike (e.g. two all-Chinese names) still get distinct names.
+fn collision_display_name(server_name: &str, tool_name: &str) -> String {
+    let allowed = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    let mut server: String = server_name.chars().map(|c| if allowed(c) { c } else { '_' }).collect();
+    if server != server_name {
+        server = format!("{}_{}", server.trim_matches('_'), short_hash(server_name));
+    }
+
+    let fixed = "mcp__".len() + 1 + tool_name.len();
+    let budget = MAX_TOOL_NAME_LEN.saturating_sub(fixed).max(MIN_SERVER_PART_LEN);
+    if server.len() > budget {
+        // Keep the hash (the part that tells servers apart) when truncating.
+        let tail = short_hash(server_name);
+        let keep = budget.saturating_sub(tail.len() + 1);
+        server = format!("{}_{}", &server[..keep.min(server.len())], tail);
+    }
+    format!("mcp__{server}_{tool_name}")
+}
+
 /// Register all MCP tools into the tool registry, handling name collisions.
 ///
 /// Strategy:
@@ -199,7 +243,7 @@ pub fn register_mcp_tools(
         let cross_server_collision = manager.tool_name_count(original_name) > 1;
 
         let display_name = if collides_builtin || cross_server_collision {
-            format!("mcp__{}_{}", server_name, original_name)
+            collision_display_name(server_name, original_name)
         } else {
             original_name.clone()
         };
@@ -253,7 +297,7 @@ pub fn register_single_server_tools(
         let cross_server_collision = manager.tool_name_count(original_name) > 1;
 
         let display_name = if collides_builtin || cross_server_collision {
-            format!("mcp__{}_{}", server_name, original_name)
+            collision_display_name(server_name, original_name)
         } else {
             original_name.clone()
         };

@@ -253,4 +253,74 @@ mod tests {
             "the other well-formed tools on the same server must still register"
         );
     }
+
+    fn provider_safe(name: &str) -> bool {
+        !name.is_empty()
+            && name.len() <= MAX_TOOL_NAME_LEN
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    }
+
+    #[test]
+    fn ascii_server_names_keep_the_documented_prefix() {
+        assert_eq!(collision_display_name("corp-tools", "lookup"), "mcp__corp-tools_lookup");
+    }
+
+    #[test]
+    fn non_ascii_server_name_never_reaches_the_provider() {
+        let name = collision_display_name("QA企业发布与费用核算", "get_project_release");
+        assert!(provider_safe(&name), "{name}");
+        assert!(name.starts_with("mcp__QA_"), "{name}");
+        assert!(name.ends_with("_get_project_release"), "{name}");
+    }
+
+    #[test]
+    fn servers_that_sanitize_alike_stay_distinct() {
+        let a = collision_display_name("企业发布", "lookup");
+        let b = collision_display_name("费用核算", "lookup");
+        assert_ne!(a, b);
+        assert!(provider_safe(&a) && provider_safe(&b));
+        // Deterministic: the same server always gets the same name.
+        assert_eq!(a, collision_display_name("企业发布", "lookup"));
+    }
+
+    #[test]
+    fn spaces_and_punctuation_are_replaced() {
+        let name = collision_display_name("my server (prod)", "lookup");
+        assert!(provider_safe(&name), "{name}");
+    }
+
+    #[test]
+    fn long_names_are_capped_without_losing_what_tells_servers_apart() {
+        let tool = "t".repeat(40);
+        let a = collision_display_name(&"服务器".repeat(30), &tool);
+        let b = collision_display_name(&"服务甲".repeat(30), &tool);
+        assert!(provider_safe(&a) && provider_safe(&b), "{a} / {b}");
+        assert_ne!(a, b);
+        assert!(a.ends_with(&tool));
+    }
+
+    #[test]
+    fn colliding_tools_from_a_non_ascii_server_register_under_safe_names() {
+        let manager = Arc::new(McpManager::new_for_test_with_tools(vec![
+            (
+                "企业发布",
+                true,
+                vec![tool_def("lookup", json!({"type": "object"}))],
+                Box::new(NoopTransport),
+            ),
+            (
+                "费用核算",
+                true,
+                vec![tool_def("lookup", json!({"type": "object"}))],
+                Box::new(NoopTransport),
+            ),
+        ]));
+        let mut registry = dream_engine_tools::registry::ToolRegistry::new();
+
+        register_mcp_tools(&mut registry, &manager, &[], &HashMap::new());
+
+        let names = registry.tool_names();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names.iter().all(|n| provider_safe(n)), "{names:?}");
+    }
 }
