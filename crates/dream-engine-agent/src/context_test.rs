@@ -1109,5 +1109,8 @@ mod tests {
         // Closing suggestions are welcome, but only after the work is done.
         assert!(result.contains("Deliver first, suggest second"));
         assert!(result.contains("must never be a precondition"));
+        // Long tasks narrate as they go, without turning narration into a question.
+        assert!(result.contains("Keep the user oriented while you work"));
+        assert!(result.contains("narration, not a request for permission"));
     }
 }
