@@ -42,6 +42,54 @@ fn null_output() -> Arc<dyn dream_engine_agent::output::OutputSink> {
 }
 
 #[tokio::test]
+async fn host_skill_is_registered_and_keeps_resource_root() {
+    use dream_engine_agent::skills::frontmatter::{parse_frontmatter, parse_skill_fields};
+    use dream_engine_agent::skills::types::{LoadedFrom, SkillSource};
+    use serde_json::json;
+
+    let workspace = tempfile::tempdir().unwrap();
+    let parsed =
+        parse_frontmatter("---\nname: employee-bound-skill\ndescription: Bound QA skill\n---\nBOUND-SKILL-BODY");
+    let skill = parse_skill_fields(
+        &parsed.frontmatter,
+        &parsed.content,
+        "employee-bound-skill",
+        SkillSource::Managed,
+        LoadedFrom::Managed,
+        workspace.path().to_str(),
+    );
+    let mut result = AgentBootstrap::new(minimal_config(), workspace.path().to_str().unwrap(), null_output())
+        .host_skills(vec![skill])
+        .build()
+        .await
+        .unwrap();
+    assert!(
+        result
+            .engine
+            .skill_names()
+            .iter()
+            .any(|name| name == "employee-bound-skill")
+    );
+    let loaded = result
+        .engine
+        .registry_mut()
+        .get("Skill")
+        .unwrap()
+        .execute(json!({"skill": "employee-bound-skill"}))
+        .await;
+    assert!(!loaded.is_error, "{}", loaded.content);
+    assert!(loaded.content.contains("BOUND-SKILL-BODY"));
+    let missing = result
+        .engine
+        .registry_mut()
+        .get("Skill")
+        .unwrap()
+        .execute(json!({"skill": "unselected-employee-skill"}))
+        .await;
+    assert!(missing.is_error);
+}
+
+#[tokio::test]
 async fn bootstrap_builds_engine_with_model_in_prompt() {
     let config = minimal_config();
     let result = AgentBootstrap::new(config, "/tmp/test-workspace", null_output())

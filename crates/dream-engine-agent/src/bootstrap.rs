@@ -66,6 +66,7 @@ pub struct AgentBootstrap {
     config: Config,
     workspace: PathBuf,
     extra_skill_dirs: Vec<PathBuf>,
+    host_skills: Vec<SkillMetadata>,
 
     // Output integration.
     output: Arc<dyn OutputSink>,
@@ -110,6 +111,7 @@ impl AgentBootstrap {
             config,
             workspace: PathBuf::from(workspace.into()),
             extra_skill_dirs: Vec::new(),
+            host_skills: Vec::new(),
             output,
             provider: None,
             resume_session: None,
@@ -159,6 +161,15 @@ impl AgentBootstrap {
     /// Add extra directories to scan for skills.
     pub fn extra_skill_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
         self.extra_skill_dirs = dirs;
+        self
+    }
+
+    /// Add skills selected and authorized by an embedding host. Metadata keeps
+    /// its original skill root so scripts and relative resources still work.
+    /// Existing engine skills win name collisions; unselected host skills are
+    /// never scanned. The same list feeds prompts and the Skill tool.
+    pub fn host_skills(mut self, skills: Vec<SkillMetadata>) -> Self {
+        self.host_skills = skills;
         self
     }
 
@@ -356,7 +367,13 @@ impl AgentBootstrap {
     }
 
     async fn load_skills(&self, workspace: &Path, mcp_manager: Option<&McpManager>) -> Vec<SkillMetadata> {
-        load_all_skills(workspace, &self.extra_skill_dirs, false, mcp_manager).await
+        let mut skills = load_all_skills(workspace, &self.extra_skill_dirs, false, mcp_manager).await;
+        for skill in &self.host_skills {
+            if !skills.iter().any(|existing| existing.name == skill.name) {
+                skills.push(skill.clone());
+            }
+        }
+        skills
     }
 
     fn configure_system_prompt(&mut self, environment: &BootstrapEnvironment, skills: &[SkillMetadata]) -> PromptUsage {
