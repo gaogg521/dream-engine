@@ -23,6 +23,16 @@ pub struct SseTransport {
     _listener: tokio::task::JoinHandle<()>,
 }
 
+impl Drop for SseTransport {
+    fn drop(&mut self) {
+        self._listener.abort();
+    }
+}
+
+#[cfg(test)]
+#[path = "sse_drop_test.rs"]
+mod sse_drop_test;
+
 impl SseTransport {
     /// Connect to an SSE MCP server
     pub async fn connect(url: &str, headers: &HashMap<String, String>) -> Result<Self, McpError> {

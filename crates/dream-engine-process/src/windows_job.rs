@@ -4,7 +4,11 @@ use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
-use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject};
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
+    TerminateJobObject,
+};
 use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
 
 pub(crate) struct JobObject {
@@ -15,7 +19,11 @@ unsafe impl Send for JobObject {}
 unsafe impl Sync for JobObject {}
 
 impl JobObject {
-    pub(crate) fn assign_and_resume(child_raw: RawHandle, pid: u32) -> std::result::Result<Self, String> {
+    pub(crate) fn assign_and_resume(
+        child_raw: RawHandle,
+        pid: u32,
+        kill_on_drop: bool,
+    ) -> std::result::Result<Self, String> {
         let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if job.is_null() {
             return Err(format!("CreateJobObjectW failed: {}", std::io::Error::last_os_error()));
@@ -23,6 +31,26 @@ impl JobObject {
 
         let this = Self { job };
 
+        // The last handle closing must reap descendants even on cancellation
+        // or a host crash; killing only the launcher leaves npx workers alive.
+        if kill_on_drop {
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = unsafe {
+                SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    std::ptr::from_ref(&info).cast(),
+                    std::mem::size_of_val(&info) as u32,
+                )
+            };
+            if ok == 0 {
+                return Err(format!(
+                    "SetInformationJobObject failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
         let ok = unsafe { AssignProcessToJobObject(job, child_raw as HANDLE) };
         if ok == 0 {
             return Err(format!(

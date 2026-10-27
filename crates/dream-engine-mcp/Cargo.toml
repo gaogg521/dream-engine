@@ -11,6 +11,7 @@ dream-engine-types.workspace    = true
 dream-engine-protocol.workspace = true
 dream-engine-tools.workspace    = true
 dream-engine-config.workspace   = true
+dream-engine-process.workspace  = true
 
 tracing.workspace     = true
 tokio.workspace       = true
@@ -25,3 +26,6 @@ workspace-hack.workspace = true
 
 [features]
 test-utils = []
+
+[dev-dependencies]
+tempfile.workspace = true

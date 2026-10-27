@@ -5,21 +5,32 @@ use tokio::process::{Child, Command};
 #[cfg(windows)]
 use crate::windows_job::JobObject;
 
-pub(crate) struct ChildContainment {
+/// Owns a spawned process tree. Configure before spawn, attach before allowing
+/// child work, and terminate before releasing the child, including cancellation.
+pub struct ChildContainment {
     #[cfg(windows)]
     job: JobObject,
 }
 
 impl ChildContainment {
-    pub(crate) fn configure(command: &mut Command) {
+    /// Configure a private process group or suspended Windows process.
+    pub fn configure(command: &mut Command) {
         configure_command(command);
     }
 
-    pub(crate) fn attach(child: &mut Child) -> Result<Self> {
-        attach_child(child)
+    /// Attach tree ownership and resume a suspended Windows child.
+    pub fn attach(child: &mut Child) -> Result<Self> {
+        attach_child(child, false)
     }
 
-    pub(crate) fn terminate(&self, child: &mut Child, child_id: Option<u32>) -> Result<()> {
+    /// Attach an MCP-owned tree which must not outlive its owner, including
+    /// a Windows host crash. Detached command execution retains its semantics.
+    pub fn attach_owned(child: &mut Child) -> Result<Self> {
+        attach_child(child, true)
+    }
+
+    /// Terminate the owned tree, using the original PID even after leader exit.
+    pub fn terminate(&self, child: &mut Child, child_id: Option<u32>) -> Result<()> {
         terminate_child(child, child_id, self)
     }
 }
@@ -44,20 +55,20 @@ fn configure_command(command: &mut Command) {
 fn configure_command(_command: &mut Command) {}
 
 #[cfg(windows)]
-fn attach_child(child: &mut Child) -> Result<ChildContainment> {
+fn attach_child(child: &mut Child, kill_on_drop: bool) -> Result<ChildContainment> {
     let pid = child.id().ok_or_else(|| Error::other("spawned child has no pid"))?;
     let raw_handle = child
         .raw_handle()
         .ok_or_else(|| Error::other("spawned child has no raw handle"))?;
 
-    let job = JobObject::assign_and_resume(raw_handle, pid)
+    let job = JobObject::assign_and_resume(raw_handle, pid, kill_on_drop)
         .map_err(|error| Error::other(format!("windows job containment failed: {error}")))?;
 
     Ok(ChildContainment { job })
 }
 
 #[cfg(not(windows))]
-fn attach_child(_child: &mut Child) -> Result<ChildContainment> {
+fn attach_child(_child: &mut Child, _kill_on_drop: bool) -> Result<ChildContainment> {
     Ok(ChildContainment {})
 }
 

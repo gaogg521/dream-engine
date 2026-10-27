@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use dream_engine_process::ChildContainment;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
@@ -14,6 +15,8 @@ pub struct StdioTransport {
     stdin: Mutex<BufWriter<ChildStdin>>,
     stdout: Mutex<BufReader<ChildStdout>>,
     child: Mutex<Child>,
+    child_id: Option<u32>,
+    containment: ChildContainment,
     next_id: AtomicU64,
 }
 
@@ -28,10 +31,14 @@ impl StdioTransport {
             .stderr(std::process::Stdio::inherit())
             .envs(env);
         dream_engine_config::shell::suppress_console_window(&mut cmd);
+        ChildContainment::configure(&mut cmd);
 
         let mut child = cmd
             .spawn()
             .map_err(|e| McpError::Transport(format!("Failed to spawn '{}': {}", command, e)))?;
+        let child_id = child.id();
+        let containment = ChildContainment::attach_owned(&mut child)
+            .map_err(|e| McpError::Transport(format!("Failed to contain MCP process: {e}")))?;
 
         let stdin = child
             .stdin
@@ -46,6 +53,8 @@ impl StdioTransport {
             stdin: Mutex::new(BufWriter::new(stdin)),
             stdout: Mutex::new(BufReader::new(stdout)),
             child: Mutex::new(child),
+            child_id,
+            containment,
             next_id: AtomicU64::new(1),
         })
     }
@@ -126,10 +135,26 @@ impl McpTransport for StdioTransport {
     }
 
     async fn close(&self) -> Result<(), McpError> {
-        // Drop stdin to signal EOF, then wait for child
         let mut child = self.child.lock().await;
-        // kill the child process gracefully
-        let _ = child.kill().await;
+        self.containment
+            .terminate(&mut child, self.child_id)
+            .map_err(|e| McpError::Transport(format!("Failed to stop MCP process tree: {e}")))?;
+        child
+            .wait()
+            .await
+            .map_err(|e| McpError::Transport(format!("Failed to reap MCP process: {e}")))?;
         Ok(())
     }
 }
+
+impl Drop for StdioTransport {
+    fn drop(&mut self) {
+        if let Err(error) = self.containment.terminate(self.child.get_mut(), self.child_id) {
+            tracing::warn!(target: "dream_engine_mcp", %error, "failed to reap MCP process tree on drop");
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "stdio_test.rs"]
+mod stdio_test;
