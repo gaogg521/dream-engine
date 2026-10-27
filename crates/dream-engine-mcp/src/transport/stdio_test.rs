@@ -45,6 +45,14 @@ fn process_tree_fixture() {
 }
 
 fn alive(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        && stat.rsplit_once(") ").is_some_and(|(_, state)| state.starts_with('Z'))
+    {
+        // An orphan waiting for init to reap it cannot execute or hold an MCP
+        // connection; kill -0 alone also reports these zombies as alive.
+        return false;
+    }
     #[cfg(windows)]
     {
         Command::new("tasklist.exe")

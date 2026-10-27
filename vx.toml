@@ -1,5 +1,5 @@
 [tools]
-just = "1.48.1"
+just = "1.58.0"
 rust = "1.95.0"
 
 [settings]
