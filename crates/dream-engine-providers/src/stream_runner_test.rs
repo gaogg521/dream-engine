@@ -1,6 +1,110 @@
 use super::*;
 
 #[cfg(test)]
+mod cancellation_tests {
+    use std::future::pending;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use tokio::sync::{Semaphore, oneshot};
+    use tokio::task::yield_now;
+    use tokio::time::{advance, pause, timeout};
+
+    use super::*;
+
+    struct DropSignal(Option<oneshot::Sender<()>>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn receiver_drop_releases_a_silent_response_without_waiting_for_an_event() {
+        let (dropped, drop_notice) = oneshot::channel();
+        let response = Arc::new(Mutex::new(Some(DropSignal(Some(dropped)))));
+        let entered = Arc::new(Semaphore::new(0));
+        let rx = run_stream(
+            move || {
+                let response = response.lock().unwrap().take().unwrap();
+                async move { Ok(response) }
+            },
+            {
+                let entered = Arc::clone(&entered);
+                move |response, _sender| {
+                    let entered = Arc::clone(&entered);
+                    async move {
+                        let _response = response;
+                        entered.add_permits(1);
+                        pending::<StreamOutcome>().await
+                    }
+                }
+            },
+            RetryPolicy::new(0, false, false, false),
+        )
+        .await
+        .unwrap();
+        entered.acquire().await.unwrap().forget();
+        drop(rx);
+        timeout(Duration::from_secs(1), drop_notice)
+            .await
+            .expect("cancelling a silent stream must drop its response promptly")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn receiver_closed_before_worker_poll_does_not_start_processing() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let rx = run_stream(
+            || async { Ok(()) },
+            {
+                let calls = Arc::clone(&calls);
+                move |(), _sender| {
+                    let calls = Arc::clone(&calls);
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        pending::<StreamOutcome>().await
+                    }
+                }
+            },
+            RetryPolicy::new(0, false, false, false),
+        )
+        .await
+        .unwrap();
+        drop(rx);
+        yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn receiver_drop_during_retry_backoff_prevents_resending() {
+        pause();
+        let sends = Arc::new(AtomicUsize::new(0));
+        let rx = run_stream(
+            {
+                let sends = Arc::clone(&sends);
+                move || {
+                    sends.fetch_add(1, Ordering::SeqCst);
+                    async { Ok(()) }
+                }
+            },
+            |(), _sender| async { StreamOutcome::FailedEmpty(ProviderError::Connection("test disconnect".into())) },
+            RetryPolicy::new(3, false, true, false),
+        )
+        .await
+        .unwrap();
+        yield_now().await;
+        drop(rx);
+        advance(Duration::from_secs(30)).await;
+        yield_now().await;
+        assert_eq!(sends.load(Ordering::SeqCst), 1, "cancelled streams must not retry");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};

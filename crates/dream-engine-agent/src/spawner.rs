@@ -1,7 +1,10 @@
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::FutureExt;
+use futures::future::join_all;
 
 use dream_engine_config::config::Config;
 use dream_engine_providers::LlmProvider;
@@ -104,40 +107,28 @@ impl AgentSpawner {
         }
     }
 
-    /// Spawn multiple sub-agents in parallel.
+    /// Run children concurrently within the caller's future. Dropping or
+    /// aborting that future drops every child, rather than detaching tasks.
     pub async fn spawn_parallel(&self, sub_configs: Vec<SubAgentConfig>) -> Vec<SubAgentResult> {
-        let futures: Vec<_> = sub_configs
-            .into_iter()
-            .map(|config| {
-                let spawner = self.clone_for_spawn();
-                tokio::spawn(async move { spawner.spawn_one(config).await })
-            })
-            .collect();
-
-        let mut results = Vec::new();
-        for future in futures {
-            match future.await {
-                Ok(result) => results.push(result),
-                Err(e) => results.push(SubAgentResult {
-                    name: "unknown".to_string(),
-                    text: format!("Task join error: {}", e),
-                    usage: TokenUsage::default(),
-                    turns: 0,
-                    is_error: true,
-                }),
+        join_all(sub_configs.into_iter().map(|config| async move {
+            let name = config.name.clone();
+            // Keep the previous per-child panic boundary without independent
+            // Tokio tasks. Results retain input order, even on partial failure.
+            match AssertUnwindSafe(self.spawn_one(config)).catch_unwind().await {
+                Ok(result) => result,
+                Err(_) => {
+                    tracing::warn!(target: "dream_engine_agent", "sub-agent task panicked");
+                    SubAgentResult {
+                        name,
+                        text: "Sub-agent task panicked".to_owned(),
+                        usage: TokenUsage::default(),
+                        turns: 0,
+                        is_error: true,
+                    }
+                }
             }
-        }
-        results
-    }
-
-    fn clone_for_spawn(&self) -> Self {
-        Self {
-            provider: self.provider.clone(),
-            base_config: self.base_config.clone(),
-            cwd: self.cwd.clone(),
-            runtime_env: self.runtime_env.clone(),
-            tool_policy: self.tool_policy.clone(),
-        }
+        }))
+        .await
     }
 }
 
