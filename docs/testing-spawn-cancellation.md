@@ -5,6 +5,9 @@ aborting its parent task cancels all children. Results remain in input order;
 a child panic becomes an error result without cancelling successful siblings.
 The provider stream worker also stops when its event receiver closes, including
 while the upstream is silent or while an empty-stream retry is waiting.
+If a child is awaiting an `ExecCommand`, cancellation terminates the contained
+foreground process tree. Successful command exit disarms that cancellation
+guard, so explicitly backgrounded descendants retain their existing lifetime.
 
 The default suite covers cancellation before provider response headers, dropping
 and aborting the parent, per-child panic isolation, silent response ownership,

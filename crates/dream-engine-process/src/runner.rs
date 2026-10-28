@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 
 use crate::containment::ChildContainment;
@@ -17,6 +17,36 @@ pub struct CommandRunner {
     command: Command,
     timeout: Duration,
     post_process_drain: Duration,
+}
+
+/// Cancellation owns the running foreground tree. Successful command exit
+/// disarms this guard, preserving explicitly detached background descendants.
+struct RunningCommand {
+    child: Child,
+    child_id: Option<u32>,
+    containment: ChildContainment,
+    terminate_on_drop: bool,
+}
+
+impl RunningCommand {
+    fn terminate(&mut self) -> Result<()> {
+        self.containment.terminate(&mut self.child, self.child_id)?;
+        self.terminate_on_drop = false;
+        Ok(())
+    }
+}
+
+impl Drop for RunningCommand {
+    fn drop(&mut self) {
+        if self.terminate_on_drop {
+            match self.terminate() {
+                Ok(()) => tracing::debug!(pid = ?self.child_id, "cancelled foreground command tree terminated"),
+                Err(error) => {
+                    tracing::warn!(pid = ?self.child_id, %error, "failed to terminate cancelled foreground command tree")
+                }
+            }
+        }
+    }
 }
 
 impl CommandRunner {
@@ -48,21 +78,30 @@ impl CommandRunner {
         let mut child = self.command.spawn()?;
         let child_id = child.id();
         let containment = ChildContainment::attach(&mut child)?;
+        let mut running = RunningCommand {
+            child,
+            child_id,
+            containment,
+            terminate_on_drop: true,
+        };
         let stdout = Arc::new(Mutex::new(Vec::new()));
         let stderr = Arc::new(Mutex::new(Vec::new()));
 
-        let stdout_reader = child
+        let stdout_reader = running
+            .child
             .stdout
             .take()
             .map(|reader| read_stream(reader, Arc::clone(&stdout)));
-        let stderr_reader = child
+        let stderr_reader = running
+            .child
             .stderr
             .take()
             .map(|reader| read_stream(reader, Arc::clone(&stderr)));
 
-        match tokio::time::timeout(self.timeout, child.wait()).await {
+        match tokio::time::timeout(self.timeout, running.child.wait()).await {
             Ok(status) => {
                 let status = status?;
+                running.terminate_on_drop = false;
                 let (stdout_result, stderr_result) = tokio::join!(
                     drain_reader_with_result(stdout_reader, self.post_process_drain),
                     drain_reader_with_result(stderr_reader, self.post_process_drain)
@@ -78,8 +117,8 @@ impl CommandRunner {
                 })
             }
             Err(_) => {
-                containment.terminate(&mut child, child_id)?;
-                if let Ok(status) = tokio::time::timeout(self.post_process_drain, child.wait()).await {
+                running.terminate()?;
+                if let Ok(status) = tokio::time::timeout(self.post_process_drain, running.child.wait()).await {
                     status?;
                 }
                 tokio::join!(

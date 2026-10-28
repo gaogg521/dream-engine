@@ -8,6 +8,54 @@ mod tests {
 
     use super::CommandRunner;
 
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn cancelling_a_running_command_reaps_its_foreground_descendant() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("foreground.pid");
+        #[cfg(windows)]
+        let script = format!(
+            "$p = Start-Process -FilePath powershell -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 30' -PassThru -WindowStyle Hidden; [IO.File]::WriteAllText('{}', [string]$p.Id); Wait-Process -Id $p.Id",
+            pid_file.display().to_string().replace('\'', "''")
+        );
+        #[cfg(unix)]
+        let script = format!(
+            "sleep 30 & echo $! > '{}'; wait",
+            pid_file.display().to_string().replace('\'', "'\\''")
+        );
+        let parent = tokio::spawn(CommandRunner::new(shell_command(&script)).run());
+        let child_pid = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(pid) = std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|text| text.trim().parse::<u32>().ok())
+                {
+                    break pid;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("foreground descendant started");
+        assert!(process_alive(child_pid));
+        parent.abort();
+        assert!(parent.await.unwrap_err().is_cancelled());
+        let exited = tokio::time::timeout(Duration::from_secs(2), async {
+            while process_alive(child_pid) {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .is_ok();
+        if !exited {
+            terminate_process(child_pid);
+        }
+        assert!(
+            exited,
+            "foreground descendant must be reaped when the command future is cancelled"
+        );
+    }
+
     #[tokio::test]
     async fn runner_preserves_stdout_emitted_before_timeout() {
         #[cfg(windows)]
@@ -167,6 +215,19 @@ mod tests {
         terminate_process(sleep_pid);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn runner_completed_command_keeps_unix_background_descendant_running() {
+        let result = CommandRunner::new(shell_command("sleep 30 & echo $!"))
+            .run()
+            .await
+            .expect("runner should complete");
+        let pid = String::from_utf8_lossy(&result.stdout).trim().parse::<u32>().unwrap();
+        let alive = process_alive(pid);
+        terminate_process(pid);
+        assert!(alive, "normal completion must preserve explicitly backgrounded work");
+    }
+
     #[cfg(windows)]
     fn shell_command(script: &str) -> Command {
         let mut command = Command::new("powershell");
@@ -205,6 +266,13 @@ mod tests {
         }
 
         !matches!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH))
+    }
+
+    #[cfg(unix)]
+    fn terminate_process(pid: u32) {
+        if let Some(target) = i32::try_from(pid).ok().filter(|target| *target > 1) {
+            let _ = unsafe { libc::kill(target, libc::SIGKILL) };
+        }
     }
 
     #[cfg(windows)]
