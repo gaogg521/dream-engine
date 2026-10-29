@@ -119,6 +119,75 @@ pub fn truncate_index(raw: &str) -> IndexTruncation {
 }
 
 // ---------------------------------------------------------------------------
+// Prompt view
+// ---------------------------------------------------------------------------
+
+/// Entries of the index shown in the system prompt.
+///
+/// Much smaller than [`MAX_INDEX_LINES`] on purpose: the file may keep growing, but every
+/// conversation pays for what is shown here, so the prompt carries only the newest entries.
+/// Older memories reach a conversation when the request mentions them (the host matches the
+/// request against the memory files) or when the model reads the directory itself.
+pub const PROMPT_INDEX_LINES: usize = 40;
+
+/// Byte budget for the prompt view, so a few very long lines cannot defeat the line budget.
+pub const PROMPT_INDEX_BYTES: usize = 6_000;
+
+fn is_entry_line(line: &str) -> bool {
+    let line = line.trim_start();
+    (line.starts_with("- ") || line.starts_with("* ")) && line.contains('[')
+}
+
+/// The part of the index to put in the system prompt.
+///
+/// Within budget the index is shown as written. Over budget, the newest entries that fit are
+/// shown (entries are appended, so the end of the file is the recent part) followed by a note
+/// saying how to reach the rest and asking the model to fold related entries together the next
+/// time it saves one — the index shrinks through use instead of being cut off silently.
+/// [`truncate_index`] keeps the *first* lines, which are the oldest, so it is the wrong tool here.
+pub fn index_for_prompt(raw: &str) -> IndexTruncation {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return truncate_index(raw);
+    }
+    let lines: Vec<&str> = trimmed.split('\n').collect();
+    let entries: Vec<&str> = lines.iter().copied().filter(|l| is_entry_line(l)).collect();
+    let within_budget = lines.len() <= PROMPT_INDEX_LINES && trimmed.len() <= PROMPT_INDEX_BYTES;
+    // Free-form text has no entries to pick between; the generic caps apply.
+    if within_budget || entries.is_empty() {
+        return truncate_index(raw);
+    }
+
+    let mut shown: Vec<&str> = Vec::new();
+    let mut bytes = 0;
+    for line in entries.iter().rev() {
+        if !shown.is_empty() && (shown.len() >= PROMPT_INDEX_LINES || bytes + line.len() + 1 > PROMPT_INDEX_BYTES) {
+            break;
+        }
+        bytes += line.len() + 1;
+        shown.push(line);
+    }
+    shown.reverse();
+
+    let note = format!(
+        "> Showing the newest {} of {} entries; the prompt keeps this list short. Older memories are \
+         brought into the conversation automatically when the request mentions them; otherwise list \
+         this directory and Read the file. When you next save a memory, also merge related older \
+         entries into fewer files and rewrite {} shorter \u{2014} one line each, under ~120 characters, \
+         using the words a person would use to ask about it.",
+        shown.len(),
+        entries.len(),
+        crate::paths::ENTRYPOINT_NAME,
+    );
+    IndexTruncation {
+        content: format!("{}\n\n{note}", shown.join("\n")),
+        line_count: lines.len(),
+        byte_count: trimmed.len(),
+        was_truncated: true,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Append
 // ---------------------------------------------------------------------------
 

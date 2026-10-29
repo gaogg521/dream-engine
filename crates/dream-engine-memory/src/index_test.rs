@@ -306,4 +306,81 @@ mod tests {
         let result = read_index(&path);
         assert_eq!(result, "# Index\n- [A](a.md)\n");
     }
+
+    // -- index_for_prompt ------------------------------------------------------
+
+    fn entries(n: usize) -> String {
+        (0..n)
+            .map(|i| format!("- [Item {i}](item_{i}.md) \u{2014} summary {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn prompt_view_shows_a_small_index_as_written() {
+        let raw = "# Memory Index\n\n- [A](a.md) \u{2014} first\n- [B](b.md) \u{2014} second\n";
+        let view = index_for_prompt(raw);
+        assert!(!view.was_truncated);
+        assert_eq!(view.content, raw.trim());
+    }
+
+    #[test]
+    fn prompt_view_keeps_the_newest_entries_not_the_oldest() {
+        let view = index_for_prompt(&entries(120));
+        assert!(view.was_truncated);
+        let shown = view.content.lines().filter(|l| l.starts_with("- [")).count();
+        assert_eq!(shown, PROMPT_INDEX_LINES);
+        // The last entry written is the most recent one and must survive; the first is the oldest.
+        assert!(view.content.contains("item_119.md"));
+        assert!(!view.content.contains("item_0.md"));
+        assert!(view.content.contains("newest 40 of 120"));
+    }
+
+    #[test]
+    fn prompt_view_says_how_to_reach_the_rest_and_asks_for_consolidation() {
+        let view = index_for_prompt(&entries(60));
+        assert!(view.content.contains("brought into the conversation automatically"));
+        assert!(view.content.contains("merge related older entries"));
+    }
+
+    #[test]
+    fn prompt_view_respects_the_byte_budget_when_lines_are_long() {
+        let long: String = (0..30)
+            .map(|i| format!("- [Long {i}](long_{i}.md) \u{2014} {}\n", "x".repeat(400)))
+            .collect();
+        let view = index_for_prompt(&long);
+        assert!(view.was_truncated);
+        let body = view.content.split("\n\n> ").next().unwrap();
+        assert!(body.len() <= PROMPT_INDEX_BYTES, "{} bytes", body.len());
+        assert!(view.content.contains("long_29.md"));
+    }
+
+    #[test]
+    fn prompt_view_never_cuts_through_a_cjk_character() {
+        let cjk: String = (0..80)
+            .map(|i| {
+                format!(
+                    "- [\u{8bb0}\u{5fc6}{i}](m_{i}.md) \u{2014} {}\n",
+                    "\u{4e2d}".repeat(120)
+                )
+            })
+            .collect();
+        let view = index_for_prompt(&cjk);
+        assert!(view.was_truncated);
+        assert!(view.content.contains("m_79.md"));
+    }
+
+    #[test]
+    fn prompt_view_falls_back_for_free_form_text() {
+        let prose = "line\n".repeat(300);
+        let view = index_for_prompt(&prose);
+        assert!(view.content.contains("WARNING"));
+    }
+
+    #[test]
+    fn prompt_view_of_an_empty_index_is_empty() {
+        let view = index_for_prompt("  \n ");
+        assert!(!view.was_truncated);
+        assert_eq!(view.content, "");
+    }
 }

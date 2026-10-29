@@ -203,6 +203,28 @@ mod tests {
         assert!(result.contains("WARNING"));
     }
 
+    #[test]
+    fn minimal_prompt_with_a_long_index_shows_only_the_newest_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mem_dir = tmp.path().join("memory");
+        std::fs::create_dir_all(&mem_dir).unwrap();
+        let content: String = (0..150)
+            .map(|i| format!("- [Item {i}](item_{i}.md) \u{2014} summary {i}\n"))
+            .collect();
+        std::fs::write(mem_dir.join(ENTRYPOINT_NAME), &content).unwrap();
+
+        let result = build_memory_prompt_minimal(&mem_dir);
+        assert!(result.contains("item_149.md"));
+        assert!(!result.contains("item_0.md"));
+        assert!(result.contains("newest 40 of 150"));
+    }
+
+    #[test]
+    fn minimal_rules_ask_for_short_keyword_lines() {
+        let result = build_memory_prompt_minimal(Path::new("/test/memory"));
+        assert!(result.contains("words a person would use to ask about it"));
+    }
+
     // -- build_memory_prompt_minimal -------------------------------------------
 
     #[test]

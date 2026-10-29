@@ -50,6 +50,10 @@ pub struct BootstrapResult {
     // MCP runtime state discovered during bootstrap.
     pub mcp_managers: Vec<Arc<McpManager>>,
     pub has_mcp: bool,
+
+    // The memory directory this session reads and writes, when memory is on. Hosts that bring
+    // relevant memory into a turn need the same directory the model was told about.
+    pub memory_dir: Option<PathBuf>,
 }
 
 /// Builder for creating a fully-initialized `AgentEngine`.
@@ -213,6 +217,7 @@ impl AgentBootstrap {
 
         let has_mcp = mcp.has_mcp();
         let mcp_managers = mcp.managers;
+        let memory_dir = environment.memory_dir.clone();
         let engine = self.into_engine(
             provider.clone(),
             registry,
@@ -226,6 +231,7 @@ impl AgentBootstrap {
             provider,
             mcp_managers,
             has_mcp,
+            memory_dir,
         })
     }
 

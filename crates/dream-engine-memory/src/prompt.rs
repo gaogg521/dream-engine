@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use crate::index::{MAX_INDEX_LINES, read_index, truncate_index};
+use crate::index::{MAX_INDEX_LINES, index_for_prompt, read_index, truncate_index};
 use crate::paths::ENTRYPOINT_NAME;
 
 // ---------------------------------------------------------------------------
@@ -209,7 +209,7 @@ If they ask you to forget something, find and remove the relevant entry.
 
 Memory types: user, feedback, project, reference. Each memory is a Markdown file \
 with YAML frontmatter (name, description, type). MEMORY.md is the index — one \
-line per entry, never write content directly into it.
+line per entry (under ~120 characters, using the words a person would use to ask about it), never write content directly into it.
 
 Before saving, read existing memories to avoid duplicates. \
 Verify file/function names from memory still exist before recommending them.";
@@ -249,7 +249,7 @@ pub fn build_memory_prompt_minimal(memory_dir: &Path) -> String {
              When you save new memories, they will appear here."
         ));
     } else {
-        let truncation = truncate_index(&raw);
+        let truncation = index_for_prompt(&raw);
         parts.push(format!("## {ENTRYPOINT_NAME}"));
         parts.push(String::new());
         parts.push(truncation.content);
