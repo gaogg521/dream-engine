@@ -1,5 +1,68 @@
 # Changelog
 
+## [0.3.0](https://github.com/gaogg521/dream-engine/compare/v0.2.11...v0.3.0) (2026-10-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **providers:** BedrockProvider::new and VertexProvider::new gained two trailing parameters (base_url, bearer_token). The only non-test call site is create_provider in this crate.
+
+### Features
+
+* **agent:** accept user input while a run is in progress ([6855949](https://github.com/gaogg521/dream-engine/commit/68559492c8314e462e852bdc5c8550fbb52636b0))
+* **agent:** add AskUserQuestion tool and act-first working style ([bbc65ec](https://github.com/gaogg521/dream-engine/commit/bbc65ec20692bb8df345def833c6a7efda814367))
+* **agent:** let a host veto tool calls in every approval mode ([552c20d](https://github.com/gaogg521/dream-engine/commit/552c20d7db16fbfd2f6dbdb3591d53f8c775afde))
+* **agent:** narrate progress during long tasks ([5c30e02](https://github.com/gaogg521/dream-engine/commit/5c30e02cb69796389436dd49b86f70d822a0f00e))
+* **agent:** report usage while the turn is still running ([36fee01](https://github.com/gaogg521/dream-engine/commit/36fee01c78408752b6fa72eb529e0c5d7f7600cc))
+* **compact:** default to a 1M context window and a percentage trigger ([d3b8974](https://github.com/gaogg521/dream-engine/commit/d3b8974340d2769a928899832eb1fd8486510320))
+* **compact:** let the host translate what compaction tells the user ([9f26bc0](https://github.com/gaogg521/dream-engine/commit/9f26bc0d129f65c4eb732a918e80932b39678a33))
+* **compact:** recover when the provider says the prompt does not fit ([e675ccb](https://github.com/gaogg521/dream-engine/commit/e675ccb8a48a0cb472211d9a079718b2112d221a))
+* **engine:** let the host translate the truncated-tool-call notice ([f7315da](https://github.com/gaogg521/dream-engine/commit/f7315da206f49cb261b884817168a90c44407091))
+* **memory:** let a session without a project share one user-level memory directory ([b72be27](https://github.com/gaogg521/dream-engine/commit/b72be2726c38b8ee0b500e9710bd4b78efd32a0c))
+* **memory:** show only the newest index entries in the prompt and hand the memory dir to the host ([274904e](https://github.com/gaogg521/dream-engine/commit/274904ebebc97ecae6b910103b07e32389a3675d))
+* **providers,config:** session extra_headers on every LLM transport ([3f71655](https://github.com/gaogg521/dream-engine/commit/3f7165583229967226f57bf057ce48ffd0725ab9))
+* **providers:** add Ollama local OpenAI-compatible provider ([c69f579](https://github.com/gaogg521/dream-engine/commit/c69f579670752acc545a54c104ac7374aeeeb140))
+* **providers:** route Bedrock and Vertex through a configurable base_url ([23cd26b](https://github.com/gaogg521/dream-engine/commit/23cd26b3750ab00cfc4b3d88adba8dfd7268f716))
+* **providers:** suppress default thinking for reason-by-default models ([#1](https://github.com/gaogg521/dream-engine/issues/1)) ([6d11dae](https://github.com/gaogg521/dream-engine/commit/6d11dae5c24c0e7d6e7897b0aaed8248b6053561))
+* **read-image:** try on-device OCR before the vision model ([4b42191](https://github.com/gaogg521/dream-engine/commit/4b42191cb47155b11155a9eb2b8ac12e0da33a64))
+* **skills:** raise the skill-listing budget to 2% of the context window ([ead765b](https://github.com/gaogg521/dream-engine/commit/ead765bb515be71fd571f05e8f1f8eb0b5cdd140))
+
+
+### Bug Fixes
+
+* **agent:** allow a brief closing suggestion after the task is done ([b540844](https://github.com/gaogg521/dream-engine/commit/b5408441dba0b9b021ed36a690ccb42b7477f0db))
+* **agent:** forbid closing replies with follow-up menus ([5760ace](https://github.com/gaogg521/dream-engine/commit/5760acecee2566e2d943329665f5d786d8bf1a38))
+* **agent:** frame mid-run input as an interjection ([302d9f1](https://github.com/gaogg521/dream-engine/commit/302d9f16883a498a7756a04c1e13dc4c8c09b544))
+* **compact:** say what a failed compaction means instead of leaking internals ([f56af6c](https://github.com/gaogg521/dream-engine/commit/f56af6c2acfd0e564aaa6bbd6fb7b1b22a0bc3a9))
+* **config:** restrict permissions on locally persisted secrets ([060121b](https://github.com/gaogg521/dream-engine/commit/060121b5d16693fb7162495e2b1462af59e95f56))
+* **engine:** cap the output budget to what the context window can hold ([a087854](https://github.com/gaogg521/dream-engine/commit/a087854323e071509bac59b1ef6bc0ccdbeae397))
+* **engine:** keep the output cap above the extended-thinking budget ([acba858](https://github.com/gaogg521/dream-engine/commit/acba8582a100be09a920c63270820f51d8ea2343))
+* **engine:** stop surfacing routine prompt-cache misses to end users ([#2](https://github.com/gaogg521/dream-engine/issues/2)) ([57e84bc](https://github.com/gaogg521/dream-engine/commit/57e84bcddd54ed238a9d3438f636ddc7944dc2ca))
+* **mcp:** clear the two clippy errors that were failing CI behind the fmt one ([355128b](https://github.com/gaogg521/dream-engine/commit/355128b225068c43ae4113fc5c59a3718ec0d2d9))
+* **mcp:** reap owned process trees and stop detached SSE listeners ([d8cb7be](https://github.com/gaogg521/dream-engine/commit/d8cb7be043eb3f51924f4c27ccb0fa587366ee13))
+* **mcp:** register colliding tools under provider-safe names ([74c64a4](https://github.com/gaogg521/dream-engine/commit/74c64a4e6a08125c040f10d0903abb89c9bcfb99))
+* **memory:** leave tidying a long index to the host instead of asking the model to do it ([3bdc436](https://github.com/gaogg521/dream-engine/commit/3bdc436438a56c8634744b2e09a25dd23c61f36c))
+* **process:** reap foreground descendants when command execution is cancelled ([abedc2d](https://github.com/gaogg521/dream-engine/commit/abedc2d1112425d33fae1f7a702749491e2bbce3))
+* **providers:** auto-retry against /responses when a gateway rejects reasoning_effort with tools ([db811f4](https://github.com/gaogg521/dream-engine/commit/db811f41d47f465f5f49cdf73c144c49973cdea2))
+* **providers:** auto-retry with max_completion_tokens on legacy field rejection ([446e817](https://github.com/gaogg521/dream-engine/commit/446e8178a93fed7d16b1f63f82a2a66788ca4fc0))
+* **providers:** give the HTTP client a read timeout ([fb0b0b5](https://github.com/gaogg521/dream-engine/commit/fb0b0b54e68e9ba262f1b30d443367871a95be4a))
+* **read-image:** stop describing local OCR as an exact transcription ([c114b92](https://github.com/gaogg521/dream-engine/commit/c114b92176256827831ce1992837c703140dbf36))
+* register host-selected skills in engine bootstrap ([4dd2a49](https://github.com/gaogg521/dream-engine/commit/4dd2a4998782d3ff9a0749dc945b4f645fd1bbf1))
+* **spawn:** cancel owned child futures and provider streams with their parent ([42bfb3b](https://github.com/gaogg521/dream-engine/commit/42bfb3b46a99de958b7a55d085b8506adf87e1ec))
+* **windows:** don't flash a console window for every child process ([#3](https://github.com/gaogg521/dream-engine/issues/3)) ([7faa64f](https://github.com/gaogg521/dream-engine/commit/7faa64f2f9b6e90823ec91ae591e3f772460f984))
+
+
+### Code Refactoring
+
+* **agent:** open and close the mid-run inbox inside run() ([c51f1e2](https://github.com/gaogg521/dream-engine/commit/c51f1e2ee213fca8e3dae8ab4f48ab7d5ffaf7c0))
+* **protocol:** name the host veto ToolCallGuard and make it async ([b278eac](https://github.com/gaogg521/dream-engine/commit/b278eac8dd3c331515ac8f04d2061b9853fefb47))
+
+
+### Documentation
+
+* **compact:** describe the overflow fallback as the estimate it is ([e7f2012](https://github.com/gaogg521/dream-engine/commit/e7f201239f15d2568cf747b63d5d635f9d3ba894))
+* **skills:** correct the DEFAULT_CHAR_BUDGET comment ([b7a3fda](https://github.com/gaogg521/dream-engine/commit/b7a3fdafff41cc5916937432ef8f4cff6580de4d))
+
 ## [0.2.11](https://github.com/iOfficeAI/aionrs/compare/v0.2.10...v0.2.11) (2026-08-13)
 
 
