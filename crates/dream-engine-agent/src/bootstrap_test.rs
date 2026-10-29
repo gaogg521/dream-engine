@@ -199,4 +199,18 @@ mod tests {
 
         assert!(bootstrap.resolve_vision_backend(&provider).is_some());
     }
+    #[test]
+    fn a_shared_memory_session_uses_the_shared_directory_not_its_workspace_one() {
+        let output: Arc<dyn OutputSink> = Arc::new(NullSink);
+        let workspace = PathBuf::from("/tmp/conversations/2026-10-29/dream-temp-abc");
+        let own = AgentBootstrap::new(test_config(), "/tmp", output.clone());
+        let shared = AgentBootstrap::new(test_config(), "/tmp", output).shared_memory(true);
+
+        let own_dir = own.resolve_environment(workspace.clone()).unwrap().memory_dir;
+        let shared_dir = shared.resolve_environment(workspace.clone()).unwrap().memory_dir;
+
+        assert_eq!(own_dir, auto_memory_dir(&workspace));
+        assert_eq!(shared_dir, shared_memory_dir());
+        assert_ne!(own_dir, shared_dir);
+    }
 }

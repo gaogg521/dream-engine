@@ -238,6 +238,34 @@ mod tests {
         restore_env(key, original);
     }
 
+    // -- shared_memory_dir ----------------------------------------------------
+
+    #[test]
+    #[serial(env)]
+    fn shared_memory_dir_lives_beside_the_projects_not_inside_one() {
+        let key = MEMORY_DIR_ENV;
+        let original = std::env::var(key).ok();
+
+        // SAFETY: #[serial(env)] ensures no concurrent env mutation.
+        unsafe { std::env::set_var(key, "/base") };
+        assert_eq!(shared_memory_dir(), Some(PathBuf::from("/base/projects/_shared/memory")));
+        // A workspace's own memory stays where it was.
+        assert_eq!(
+            auto_memory_dir(Path::new("/home/user/project")),
+            Some(PathBuf::from("/base/projects/-home-user-project/memory"))
+        );
+
+        restore_env(key, original);
+    }
+
+    #[test]
+    fn no_project_root_can_sanitize_to_the_shared_directory_name() {
+        // Every non-alphanumeric character becomes a hyphen, so an underscore never survives.
+        for root in ["/_shared", "_shared", "C:/_shared", "/home/u/_shared/x", "/shared", "shared"] {
+            assert_ne!(sanitize_path(root), SHARED_PROJECT_DIR, "{root}");
+        }
+    }
+
     fn restore_env(key: &str, saved: Option<String>) {
         // SAFETY: only called from #[serial(env)] tests.
         unsafe {

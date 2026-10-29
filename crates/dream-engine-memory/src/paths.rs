@@ -57,6 +57,26 @@ pub fn auto_memory_dir(project_root: &Path) -> Option<PathBuf> {
     Some(base.join("projects").join(sanitized).join("memory"))
 }
 
+/// Name of the project directory that holds memory shared by every conversation that has no
+/// project of its own.
+///
+/// It starts with an underscore on purpose: [`sanitize_path`] turns every non-alphanumeric
+/// character into a hyphen, so no real project root can ever sanitize to this name.
+pub const SHARED_PROJECT_DIR: &str = "_shared";
+
+/// The auto-memory directory shared across conversations that work in a throwaway directory.
+///
+/// A conversation started without a project gets a fresh temporary workspace each time, and
+/// memory keyed by that workspace is written once and never read again: what the assistant
+/// learned about the person in one conversation would be invisible to the next. Those
+/// conversations use this one directory instead.
+///
+/// Path: `<base>/projects/_shared/memory/`
+pub fn shared_memory_dir() -> Option<PathBuf> {
+    let base = memory_base_dir()?;
+    Some(base.join("projects").join(SHARED_PROJECT_DIR).join("memory"))
+}
+
 // ---------------------------------------------------------------------------
 // Entrypoint
 // ---------------------------------------------------------------------------

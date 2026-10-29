@@ -8,7 +8,7 @@ use dream_engine_config::config::{Config, McpServerConfig};
 use dream_engine_config::shell::{ResolvedShell, resolve_shell_config};
 use dream_engine_mcp::manager::McpManager;
 use dream_engine_mcp::tool_proxy::register_mcp_tools;
-use dream_engine_memory::paths::{ENTRYPOINT_NAME, auto_memory_dir};
+use dream_engine_memory::paths::{ENTRYPOINT_NAME, auto_memory_dir, shared_memory_dir};
 use dream_engine_providers::{LlmProvider, create_provider};
 use dream_engine_skills::loader::load_all_skills;
 use dream_engine_skills::permissions::SkillPermissionChecker;
@@ -79,6 +79,9 @@ pub struct AgentBootstrap {
     /// Host-supplied explanation for why no vision delegate is available. See
     /// [`Self::vision_unavailable_reason`].
     vision_unavailable_reason: Option<String>,
+    /// Use the memory shared across conversations instead of the workspace's own. See
+    /// [`Self::shared_memory`].
+    shared_memory: bool,
 }
 
 struct BootstrapEnvironment {
@@ -118,6 +121,7 @@ impl AgentBootstrap {
             runtime_env: Vec::new(),
             tool_policy: ToolPolicy::default(),
             vision_unavailable_reason: None,
+            shared_memory: false,
         }
     }
 
@@ -131,6 +135,18 @@ impl AgentBootstrap {
     /// which for a policy refusal is both wrong and impossible to act on.
     pub fn vision_unavailable_reason(mut self, reason: Option<String>) -> Self {
         self.vision_unavailable_reason = reason;
+        self
+    }
+
+    /// Keep this session's auto-memory in the directory shared by every conversation, rather than
+    /// under its workspace.
+    ///
+    /// For a host whose conversations work in throwaway directories: memory keyed by such a
+    /// directory is never read again, so what was learned about the person would die with the
+    /// conversation. A session working in a real project leaves this off and keeps the memory of
+    /// that project.
+    pub fn shared_memory(mut self, shared: bool) -> Self {
+        self.shared_memory = shared;
         self
     }
 
@@ -226,7 +242,11 @@ impl AgentBootstrap {
     fn resolve_environment(&self, workspace_path: PathBuf) -> Result<BootstrapEnvironment> {
         Ok(BootstrapEnvironment {
             resolved_shell: resolve_shell_config(&self.config.shell)?,
-            memory_dir: auto_memory_dir(&workspace_path),
+            memory_dir: if self.shared_memory {
+                shared_memory_dir()
+            } else {
+                auto_memory_dir(&workspace_path)
+            },
             workspace: workspace_path,
         })
     }
