@@ -337,10 +337,11 @@ mod tests {
     }
 
     #[test]
-    fn prompt_view_says_how_to_reach_the_rest_and_asks_for_consolidation() {
+    fn prompt_view_says_how_to_reach_the_rest_and_leaves_tidying_to_the_app() {
         let view = index_for_prompt(&entries(60));
         assert!(view.content.contains("brought into the conversation automatically"));
-        assert!(view.content.contains("merge related older entries"));
+        assert!(view.content.contains("do not merge or rewrite them"));
+        assert!(!view.content.contains("merge related older entries"));
     }
 
     #[test]

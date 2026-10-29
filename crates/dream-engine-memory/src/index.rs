@@ -142,8 +142,8 @@ fn is_entry_line(line: &str) -> bool {
 ///
 /// Within budget the index is shown as written. Over budget, the newest entries that fit are
 /// shown (entries are appended, so the end of the file is the recent part) followed by a note
-/// saying how to reach the rest and asking the model to fold related entries together the next
-/// time it saves one — the index shrinks through use instead of being cut off silently.
+/// saying how to reach the rest, so the index is never cut off silently. Tidying a long index is
+/// the host's job (it can ask the person first); the model is told not to do it behind their back.
 /// [`truncate_index`] keeps the *first* lines, which are the oldest, so it is the wrong tool here.
 pub fn index_for_prompt(raw: &str) -> IndexTruncation {
     let trimmed = raw.trim();
@@ -172,9 +172,9 @@ pub fn index_for_prompt(raw: &str) -> IndexTruncation {
     let note = format!(
         "> Showing the newest {} of {} entries; the prompt keeps this list short. Older memories are \
          brought into the conversation automatically when the request mentions them; otherwise list \
-         this directory and Read the file. When you next save a memory, also merge related older \
-         entries into fewer files and rewrite {} shorter \u{2014} one line each, under ~120 characters, \
-         using the words a person would use to ask about it.",
+         this directory and Read the file. The app tidies old memories itself, so do not merge or \
+         rewrite them; just keep each new {} line short (under ~120 characters) and use the words a \
+         person would use to ask about it.",
         shown.len(),
         entries.len(),
         crate::paths::ENTRYPOINT_NAME,
