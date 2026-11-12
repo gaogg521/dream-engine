@@ -1,3 +1,5 @@
+mod degraded_context;
+
 use std::mem::replace;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,6 +39,7 @@ use crate::turn::{
 };
 use anyhow::{Error as AnyhowError, Result as AnyhowResult};
 use chrono::Utc;
+use degraded_context::{DegradedSignal, is_request_timeout};
 use dream_engine_compact::CompactLevel;
 use dream_engine_config::compact::CompactConfig;
 use dream_engine_config::compat::ProviderCompat;
@@ -151,6 +154,9 @@ pub struct AgentEngine {
     compact_config: CompactConfig,
     /// Runtime context-size and compaction circuit-breaker state.
     compact_state: CompactState,
+    /// Whether this run already treated a failure as the context being too long
+    /// for this model; that recovery is attempted once per run.
+    degraded_recovered: bool,
     /// Persisted usage, source, and successful compaction counters.
     context_state: ContextState,
     /// Estimated category metadata for the system prompt.
@@ -250,6 +256,7 @@ impl AgentEngine {
             protocol_writer: None,
             compact_config,
             compact_state: CompactState::new(),
+            degraded_recovered: false,
             context_state: ContextState::default(),
             prompt_usage,
             compact_level: config.compact.compaction,
@@ -348,6 +355,7 @@ impl AgentEngine {
             protocol_writer: None,
             compact_config,
             compact_state,
+            degraded_recovered: false,
             context_state,
             prompt_usage,
             compact_level: config.compact.compaction,
@@ -587,6 +595,7 @@ impl AgentEngine {
 
     async fn run_inner(&mut self, content_blocks: Vec<ContentBlock>, msg_id: &str) -> Result<AgentResult, AgentError> {
         self.msg_id = msg_id.to_string();
+        self.degraded_recovered = false;
         self.current_turn_id = Some(
             self.pending_turn_id
                 .take()
@@ -683,6 +692,10 @@ impl AgentEngine {
                         retried = !retry_allowed,
                         "provider turn produced no valid final answer"
                     );
+                    // An empty reply at a very large context is the model
+                    // giving up on the context, not a transient hiccup; the
+                    // plain retry below would hit the same wall.
+                    self.recover_from_degraded_context(DegradedSignal::EmptyReply).await;
                     if !retry_allowed {
                         return self
                             .finalize_once(
@@ -1056,6 +1069,13 @@ impl AgentEngine {
                     // nothing else could, so learn it, compact on that evidence
                     // rather than on the estimate that was wrong, and try again.
                     let Some(message) = context_overflow_message(&error) else {
+                        // Not a refusal: the request ran out of time waiting
+                        // for a model that cannot cope with this much context.
+                        if is_request_timeout(&error)
+                            && self.recover_from_degraded_context(DegradedSignal::RequestTimeout).await
+                        {
+                            return self.generate(kind).await;
+                        }
                         return Err(error);
                     };
                     self.recover_from_context_overflow(&message).await?;

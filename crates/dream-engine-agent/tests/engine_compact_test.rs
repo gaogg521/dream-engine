@@ -1220,3 +1220,181 @@ async fn the_output_cap_never_drops_below_the_thinking_budget() {
         "max_tokens must stay above the 8192-token thinking budget, got {asked}"
     );
 }
+
+// ── A model that degrades silently on a long context ────────────────────────
+//
+// The provider never rejects the prompt, so the overflow path above cannot
+// help. What the model does instead — an empty reply, or a request that dies
+// waiting — is the only sign that the context is too long for it.
+
+/// A turn that ends with nothing: no text, no tool call.
+fn empty_turn(input_tokens: u64) -> Vec<LlmEvent> {
+    vec![LlmEvent::Done {
+        stop_reason: StopReason::EndTurn,
+        usage: TokenUsage {
+            input_tokens,
+            output_tokens: 4,
+            ..Default::default()
+        },
+    }]
+}
+
+fn degraded_engine(provider: Arc<dyn LlmProvider>, sink: &Arc<CodedTipSink>) -> AgentEngine {
+    let mut config = test_config();
+    // Nobody declared a window for this model, so the default 1M applies and
+    // autocompact has no reason to fire on its own.
+    config.compact = CompactConfig {
+        context_window: 1_000_000,
+        ..CompactConfig::default()
+    };
+    AgentEngine::new_with_provider(
+        provider,
+        config,
+        ToolRegistry::new(),
+        Arc::clone(sink) as Arc<dyn OutputSink>,
+        std::env::temp_dir(),
+    )
+}
+
+fn coded_count(sink: &CodedTipSink, wanted: &str) -> usize {
+    sink.coded
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(code, _, _)| code == wanted)
+        .count()
+}
+
+#[tokio::test]
+async fn an_empty_reply_at_a_huge_context_compacts_before_the_retry() {
+    let provider = Arc::new(CompactMockProvider::new(vec![
+        empty_turn(300_000),
+        summary_turn("<summary>Summary</summary>"),
+        text_turn("Now it answers", 20_000),
+    ]));
+    let sink = Arc::new(CodedTipSink::default());
+    let mut engine = degraded_engine(Arc::clone(&provider) as Arc<dyn LlmProvider>, &sink);
+
+    let result = engine.run("Dispatch the tasks", "msg-1").await.expect("run");
+
+    assert_eq!(result.text, "Now it answers");
+    assert_eq!(provider.call_count(), 3, "empty turn, summary call, retried turn");
+    assert_eq!(
+        coded_count(&sink, "CONTEXT_DEGRADED_COMPACT"),
+        1,
+        "the user has to be told why the history shrank"
+    );
+    let coded = sink.coded.lock().unwrap();
+    let notice = coded
+        .iter()
+        .find(|(code, _, _)| code == "CONTEXT_DEGRADED_COMPACT")
+        .unwrap();
+    // The watermark includes the few output tokens of the empty turn itself.
+    let reported = notice.1["tokens"].as_u64().unwrap();
+    assert!((300_000..300_100).contains(&reported), "reported {reported}");
+}
+
+#[tokio::test]
+async fn an_empty_reply_at_a_small_context_is_just_retried() {
+    // Early in a session an empty reply is a gateway hiccup. Summarising a
+    // small history would throw it away for nothing.
+    let provider = Arc::new(CompactMockProvider::new(vec![
+        empty_turn(20_000),
+        text_turn("Second try works", 21_000),
+    ]));
+    let sink = Arc::new(CodedTipSink::default());
+    let mut engine = degraded_engine(Arc::clone(&provider) as Arc<dyn LlmProvider>, &sink);
+
+    let result = engine.run("hello", "msg-1").await.expect("run");
+
+    assert_eq!(result.text, "Second try works");
+    assert_eq!(provider.call_count(), 2, "no summary call at a small context");
+    assert_eq!(coded_count(&sink, "CONTEXT_DEGRADED_COMPACT"), 0);
+    assert_eq!(coded_count(&sink, "AUTOCOMPACT_DONE"), 0);
+}
+
+#[tokio::test]
+async fn the_degraded_recovery_runs_once_per_run() {
+    // If compaction did not cure it, a second pass would only burn another
+    // summary call per empty reply.
+    let provider = Arc::new(CompactMockProvider::new(vec![
+        empty_turn(300_000),
+        summary_turn("<summary>Summary</summary>"),
+        empty_turn(300_000),
+    ]));
+    let sink = Arc::new(CodedTipSink::default());
+    let mut engine = degraded_engine(Arc::clone(&provider) as Arc<dyn LlmProvider>, &sink);
+
+    let _ = engine.run("hello", "msg-1").await;
+
+    assert_eq!(coded_count(&sink, "CONTEXT_DEGRADED_COMPACT"), 1);
+}
+
+/// Hands out a scripted sequence of successes and failures.
+struct ScriptedProvider {
+    script: Mutex<VecDeque<Result<Vec<LlmEvent>, ProviderError>>>,
+}
+
+#[async_trait]
+impl LlmProvider for ScriptedProvider {
+    async fn stream(&self, _request: &LlmRequest) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+        let next = self.script.lock().unwrap().pop_front().expect("script exhausted");
+        let events = next?;
+        let (tx, rx) = mpsc::channel(64);
+        tokio::spawn(async move {
+            for event in events {
+                let _ = tx.send(event).await;
+            }
+        });
+        Ok(rx)
+    }
+}
+
+fn timed_out() -> ProviderError {
+    ProviderError::Connection("request timed out waiting for the model".to_string())
+}
+
+#[tokio::test]
+async fn a_request_timeout_at_a_huge_context_compacts_and_retries() {
+    let provider = Arc::new(ScriptedProvider {
+        script: Mutex::new(VecDeque::from(vec![
+            Ok(text_turn("first answer", 300_000)),
+            Err(timed_out()),
+            Ok(summary_turn("<summary>Summary</summary>")),
+            Ok(text_turn("answered after compaction", 15_000)),
+        ])),
+    });
+    let sink = Arc::new(CodedTipSink::default());
+    let mut engine = degraded_engine(provider as Arc<dyn LlmProvider>, &sink);
+
+    engine.run("first", "msg-1").await.expect("first run");
+    let result = engine
+        .run("second", "msg-2")
+        .await
+        .expect("a timeout at this size must be recovered, not surfaced");
+
+    assert_eq!(result.text, "answered after compaction");
+    assert_eq!(coded_count(&sink, "CONTEXT_DEGRADED_COMPACT"), 1);
+}
+
+#[tokio::test]
+async fn a_request_timeout_at_a_small_context_still_fails() {
+    // A timeout on a small prompt is the network, not the context.
+    let provider = Arc::new(ScriptedProvider {
+        script: Mutex::new(VecDeque::from(vec![
+            Ok(text_turn("first answer", 20_000)),
+            Err(timed_out()),
+        ])),
+    });
+    let sink = Arc::new(CodedTipSink::default());
+    let mut engine = degraded_engine(provider as Arc<dyn LlmProvider>, &sink);
+
+    engine.run("first", "msg-1").await.expect("first run");
+    let error = engine
+        .run("second", "msg-2")
+        .await
+        .expect_err("must surface the timeout");
+
+    assert!(matches!(error, AgentError::Provider(ProviderError::Connection(_))));
+    assert_eq!(coded_count(&sink, "CONTEXT_DEGRADED_COMPACT"), 0);
+}
