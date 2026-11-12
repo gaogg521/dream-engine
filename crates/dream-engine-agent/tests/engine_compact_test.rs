@@ -1398,3 +1398,55 @@ async fn a_request_timeout_at_a_small_context_still_fails() {
     assert!(matches!(error, AgentError::Provider(ProviderError::Connection(_))));
     assert_eq!(coded_count(&sink, "CONTEXT_DEGRADED_COMPACT"), 0);
 }
+
+// ── The safety net: say what to do when recovery could not help ─────────────
+
+#[tokio::test]
+async fn two_empty_replies_at_a_huge_context_tell_the_user_to_compact_by_hand() {
+    // Automatic recovery was attempted and its summary call came back empty,
+    // so compaction failed; the retry is empty too. The user must be told what
+    // to do, and the engine must not send the whole context a third time.
+    let provider = Arc::new(CompactMockProvider::new(vec![
+        empty_turn(300_000),
+        empty_turn(5_000), // the summary request: nothing usable comes back
+        empty_turn(300_000),
+    ]));
+    let sink = Arc::new(CodedTipSink::default());
+    let mut engine = degraded_engine(Arc::clone(&provider) as Arc<dyn LlmProvider>, &sink);
+
+    let result = engine.run("Dispatch the tasks", "msg-1").await.expect("run");
+
+    assert_eq!(
+        provider.call_count(),
+        3,
+        "no finalization request on top of the two failures"
+    );
+    assert_eq!(coded_count(&sink, "CONTEXT_SUSPECTED_OVERLIMIT"), 1);
+    assert!(
+        result.text.contains("/compact"),
+        "the stored reply has to name the manual step: {}",
+        result.text
+    );
+    assert!(
+        sink.plain.lock().unwrap().is_empty(),
+        "the notice replaces the plain error, it must not be shown twice"
+    );
+}
+
+#[tokio::test]
+async fn two_empty_replies_at_a_small_context_keep_the_generic_message() {
+    // At a small size the context is not the explanation, so the advice to
+    // compact would be wrong.
+    let provider = Arc::new(CompactMockProvider::new(vec![
+        empty_turn(20_000),
+        empty_turn(20_000),
+        empty_turn(20_000),
+    ]));
+    let sink = Arc::new(CodedTipSink::default());
+    let mut engine = degraded_engine(provider as Arc<dyn LlmProvider>, &sink);
+
+    let result = engine.run("hello", "msg-1").await.expect("run");
+
+    assert_eq!(coded_count(&sink, "CONTEXT_SUSPECTED_OVERLIMIT"), 0);
+    assert!(!result.text.contains("/compact"));
+}

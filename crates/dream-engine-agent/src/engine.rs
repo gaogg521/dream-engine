@@ -696,6 +696,19 @@ impl AgentEngine {
                     // giving up on the context, not a transient hiccup; the
                     // plain retry below would hit the same wall.
                     self.recover_from_degraded_context(DegradedSignal::EmptyReply).await;
+                    if !retry_allowed && self.context_is_large() {
+                        // Two empty replies at a huge context. The finalization
+                        // request below would send the whole context a third
+                        // time to a model that just failed on it twice, and
+                        // can sit out a full request timeout doing so. Give
+                        // the user the actionable explanation instead.
+                        return self.finalize_fallback(
+                            FinalizationReason::EmptyFinal,
+                            outcome.assistant_text,
+                            guards.counted_turns(),
+                            StopReason::EndTurn,
+                        );
+                    }
                     if !retry_allowed {
                         return self
                             .finalize_once(
@@ -1071,10 +1084,13 @@ impl AgentEngine {
                     let Some(message) = context_overflow_message(&error) else {
                         // Not a refusal: the request ran out of time waiting
                         // for a model that cannot cope with this much context.
-                        if is_request_timeout(&error)
-                            && self.recover_from_degraded_context(DegradedSignal::RequestTimeout).await
-                        {
-                            return self.generate(kind).await;
+                        if is_request_timeout(&error) {
+                            if self.recover_from_degraded_context(DegradedSignal::RequestTimeout).await {
+                                return self.generate(kind).await;
+                            }
+                            if self.context_is_large() {
+                                self.emit_suspected_overlimit();
+                            }
                         }
                         return Err(error);
                     };
@@ -1376,10 +1392,18 @@ impl AgentEngine {
         counted_turns: usize,
         fallback_stop_reason: StopReason,
     ) -> Result<AgentResult, AgentError> {
-        let fallback = reason.fallback_prompt();
-        self.output.emit_error(fallback);
+        let fallback = if reason == FinalizationReason::EmptyFinal && self.context_is_large() {
+            // Coded, so the host can show it translated; it replaces the plain
+            // error rather than joining it, or the user reads it twice.
+            self.emit_suspected_overlimit();
+            self.suspected_overlimit_message()
+        } else {
+            let fallback = reason.fallback_prompt().to_string();
+            self.output.emit_error(&fallback);
+            fallback
+        };
         let fallback_text = if recovered_text.trim().is_empty() {
-            fallback.to_string()
+            fallback.clone()
         } else {
             recovered_text
         };

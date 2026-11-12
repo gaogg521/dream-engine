@@ -59,6 +59,34 @@ impl AgentEngine {
         !self.degraded_recovered && self.compact_state.last_input_tokens >= DEGRADED_CONTEXT_MIN_TOKENS
     }
 
+    /// Whether the context is big enough that a missing reply plausibly means
+    /// the model cannot cope with it, whether or not recovery was attempted.
+    pub(super) fn context_is_large(&self) -> bool {
+        self.compact_state.last_input_tokens >= DEGRADED_CONTEXT_MIN_TOKENS
+    }
+
+    /// The text that stands in for the reply the model never produced.
+    ///
+    /// This is the safety net behind automatic recovery. When compaction was
+    /// not attempted, failed, or did not help, the user is left with a session
+    /// that answers nothing; the one thing they can do is compact by hand, so
+    /// say exactly that instead of a bare "no visible answer".
+    pub(super) fn suspected_overlimit_message(&self) -> String {
+        format!(
+            "No reply was produced. This conversation (about {} tokens) is probably too long for the model. Automatic compaction did not resolve it or has not triggered yet: run /compact to compact it manually, then try again.",
+            self.compact_state.last_input_tokens
+        )
+    }
+
+    /// Tell the user a missing reply is probably down to the context length.
+    pub(super) fn emit_suspected_overlimit(&self) {
+        self.output.emit_info_coded(
+            "CONTEXT_SUSPECTED_OVERLIMIT",
+            serde_json::json!({ "tokens": self.compact_state.last_input_tokens }),
+            &self.suspected_overlimit_message(),
+        );
+    }
+
     /// Narrow the assumed window to the size that just failed and compact.
     /// Returns `true` when the history was actually shortened, so the caller
     /// knows a retry has a chance of behaving differently.
@@ -82,19 +110,23 @@ impl AgentEngine {
             "model failed at a large context; treating it as a context limit and compacting"
         );
 
-        let learned = sent as usize;
-        if learned < self.compact_config.context_window {
-            info!(
-                target: "dream_engine_agent",
-                previous = self.compact_config.context_window,
-                learned,
-                "narrowing context window after a degraded response"
-            );
-            self.compact_config.context_window = learned;
-        }
-
         match self.compact_now().await {
             CompactOutcome::Compacted => {
+                // Narrow only once compaction has actually freed the room. Done
+                // first, a failed compaction would leave a window smaller than
+                // the context in hand, and the engine's own hard limit would
+                // then refuse every further request with "context nearly full".
+                let learned = sent as usize;
+                if learned < self.compact_config.context_window {
+                    info!(
+                        target: "dream_engine_agent",
+                        previous = self.compact_config.context_window,
+                        learned,
+                        "narrowing context window after a degraded response"
+                    );
+                    self.compact_config.context_window = learned;
+                }
+
                 self.output.emit_info_coded(
                     "CONTEXT_DEGRADED_COMPACT",
                     serde_json::json!({ "tokens": sent }),
