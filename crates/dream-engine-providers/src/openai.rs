@@ -105,6 +105,76 @@ impl StreamState {
         })
     }
 
+    /// Handle the `[DONE]` sentinel: flush accumulated tool calls that never
+    /// got a finish_reason, then emit the deferred Done.
+    ///
+    /// Some OpenAI-compatible gateways close the stream with `[DONE]` without
+    /// ever sending a finish_reason. Text deltas survive that (they are emitted
+    /// as they arrive) but tool calls only leave the accumulator on a
+    /// finish_reason, so they used to vanish silently. `[DONE]` is an explicit
+    /// end-of-message signal, so the accumulated calls are complete. A bare EOF
+    /// is deliberately not handled here: there the stream may have been cut
+    /// mid-call and must fail so the runner can retry.
+    pub(crate) fn finish_on_done_sentinel(&mut self, auto_tool_id: bool) -> Vec<LlmEvent> {
+        let mut events = Vec::new();
+        if self.pending_done.is_none() && !self.tool_calls.is_empty() {
+            tracing::warn!(
+                target: "dream_engine_providers",
+                tool_call_count = self.tool_calls.len(),
+                "stream ended with [DONE] but no finish_reason; emitting accumulated tool calls"
+            );
+            self.queue_tool_uses(&mut events, auto_tool_id);
+        }
+        events.extend(self.flush_done());
+        events
+    }
+
+    /// Drain accumulated tool calls into `ToolUse` events and defer a
+    /// `ToolUse` Done.
+    fn queue_tool_uses(&mut self, events: &mut Vec<LlmEvent>, auto_tool_id: bool) {
+        for tc in self.tool_calls.drain(..) {
+            let id = if tc.id.is_empty() && auto_tool_id {
+                generate_call_id()
+            } else {
+                tc.id
+            };
+            let input: Value = match serde_json::from_str(tc.arguments.trim()) {
+                Ok(v) => v,
+                Err(e) => {
+                    // Do not silently swallow — an unparseable arguments
+                    // string means the tool will receive empty params and fail
+                    // with a confusing "missing field" error downstream.
+                    tracing::warn!(
+                        target: "dream_engine_providers",
+                        tool_call_id = %id,
+                        tool = %tc.name,
+                        args_len = tc.arguments.len(),
+                        error = %e,
+                        "failed to parse tool_call arguments; falling back to empty object"
+                    );
+                    Value::Object(serde_json::Map::new())
+                }
+            };
+            if tc.name.is_empty() {
+                tracing::warn!(
+                    target: "dream_engine_providers",
+                    tool_call_id = %id,
+                    "provider emitted tool_call with empty function name; recorded to history as-is"
+                );
+            }
+            events.push(LlmEvent::ToolUse {
+                id,
+                name: tc.name,
+                input,
+                extra: tc.extra,
+            });
+        }
+        self.pending_done = Some(LlmEvent::Done {
+            stop_reason: StopReason::ToolUse,
+            usage: TokenUsage::default(),
+        });
+    }
+
     fn get_or_create_tool(&mut self, index: usize) -> &mut ToolCallAccumulator {
         while self.tool_calls.len() <= index {
             self.tool_calls.push(ToolCallAccumulator {
@@ -233,66 +303,6 @@ pub(crate) fn parse_sse_chunk(data: &str, state: &mut StreamState, auto_tool_id:
     // chunk (choices:[]) can update token counts first.
     if let Some(finish_reason) = choice["finish_reason"].as_str() {
         match finish_reason {
-            "tool_calls" | "stop" => {
-                if !state.tool_calls.is_empty() {
-                    // Emit accumulated tool calls. Gemini uses "stop" instead of
-                    // "tool_calls" as finish_reason, so we handle both here.
-                    for tc in state.tool_calls.drain(..) {
-                        let id = if tc.id.is_empty() && auto_tool_id {
-                            generate_call_id()
-                        } else {
-                            tc.id
-                        };
-                        let input: Value = match serde_json::from_str(tc.arguments.trim()) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                // Do not silently swallow — an unparseable
-                                // arguments string means the tool will receive
-                                // empty params and fail with a confusing
-                                // "missing field" error downstream.
-                                tracing::warn!(
-                                    target: "dream_engine_providers",
-                                    tool_call_id = %id,
-                                    tool = %tc.name,
-                                    args_raw = %tc.arguments,
-                                    error = %e,
-                                    "failed to parse tool_call arguments; falling back to empty object"
-                                );
-                                Value::Object(serde_json::Map::new())
-                            }
-                        };
-                        if tc.name.is_empty() {
-                            tracing::warn!(
-                                target: "dream_engine_providers",
-                                tool_call_id = %id,
-                                "provider emitted tool_call with empty function name; recorded to history as-is"
-                            );
-                        }
-                        events.push(LlmEvent::ToolUse {
-                            id,
-                            name: tc.name,
-                            input,
-                            extra: tc.extra,
-                        });
-                    }
-                    state.pending_done = Some(LlmEvent::Done {
-                        stop_reason: StopReason::ToolUse,
-                        usage: TokenUsage::default(),
-                    });
-                } else if finish_reason == "stop" {
-                    state.pending_done = Some(LlmEvent::Done {
-                        stop_reason: StopReason::EndTurn,
-                        usage: TokenUsage::default(),
-                    });
-                } else {
-                    // "tool_calls" with empty accumulator — shouldn't happen,
-                    // but treat as ToolUse for safety.
-                    state.pending_done = Some(LlmEvent::Done {
-                        stop_reason: StopReason::ToolUse,
-                        usage: TokenUsage::default(),
-                    });
-                }
-            }
             "length" => {
                 // A tool call may still have been mid-stream when the output
                 // limit hit: its accumulated `arguments` is an incomplete
@@ -311,6 +321,36 @@ pub(crate) fn parse_sse_chunk(data: &str, state: &mut StreamState, auto_tool_id:
                 }
                 state.pending_done = Some(LlmEvent::Done {
                     stop_reason: StopReason::MaxTokens,
+                    usage: TokenUsage::default(),
+                });
+            }
+            _ if !state.tool_calls.is_empty() => {
+                // Emit accumulated tool calls whatever the finish_reason says.
+                // Gemini uses "stop", legacy gateways use "function_call", and
+                // some vendors use their own values; dropping the calls would
+                // leave the turn looking like a text-only answer, so the agent
+                // announces an action ("dispatching now") and never performs it.
+                if !matches!(finish_reason, "tool_calls" | "stop") {
+                    tracing::warn!(
+                        target: "dream_engine_providers",
+                        finish_reason,
+                        tool_call_count = state.tool_calls.len(),
+                        "non-standard finish_reason carried tool calls; treating as tool_calls"
+                    );
+                }
+                state.queue_tool_uses(&mut events, auto_tool_id);
+            }
+            "stop" => {
+                state.pending_done = Some(LlmEvent::Done {
+                    stop_reason: StopReason::EndTurn,
+                    usage: TokenUsage::default(),
+                });
+            }
+            "tool_calls" => {
+                // "tool_calls" with empty accumulator — shouldn't happen,
+                // but treat as ToolUse for safety.
+                state.pending_done = Some(LlmEvent::Done {
+                    stop_reason: StopReason::ToolUse,
                     usage: TokenUsage::default(),
                 });
             }

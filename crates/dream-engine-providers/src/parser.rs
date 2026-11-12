@@ -46,7 +46,7 @@ impl ResponseParser for OpenAiParser {
 
     fn parse_frame(&self, frame: &Frame, state: &mut Self::State) -> Vec<LlmEvent> {
         match frame.kind {
-            FrameKind::Done => state.flush_done().into_iter().collect(),
+            FrameKind::Done => state.finish_on_done_sentinel(self.auto_tool_id),
             FrameKind::Data => crate::openai::parse_sse_chunk(&frame.data, state, self.auto_tool_id),
         }
     }
