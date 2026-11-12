@@ -13,7 +13,10 @@ fn tc_2_5_01_below_emergency_threshold() {
     // context_window=1_000_000, emergency_buffer=3_000
     // emergency_limit = 1M - 3k = 997k
     // 990k < 997k → false
-    let config = CompactConfig::default();
+    let config = CompactConfig {
+        context_window: 1_000_000,
+        ..CompactConfig::default()
+    };
     assert!(
         !is_at_emergency_limit(990_000, &config),
         "990k tokens should be below the 997k emergency limit"
@@ -25,7 +28,10 @@ fn tc_2_5_01_below_emergency_threshold() {
 #[test]
 fn tc_2_5_02_above_emergency_threshold() {
     // 998k >= 997k → true
-    let config = CompactConfig::default();
+    let config = CompactConfig {
+        context_window: 1_000_000,
+        ..CompactConfig::default()
+    };
     assert!(
         is_at_emergency_limit(998_000, &config),
         "998k tokens should exceed the 997k emergency limit"
@@ -37,7 +43,10 @@ fn tc_2_5_02_above_emergency_threshold() {
 #[test]
 fn tc_2_5_03_at_exact_emergency_threshold() {
     // 997k >= 997k → true
-    let config = CompactConfig::default();
+    let config = CompactConfig {
+        context_window: 1_000_000,
+        ..CompactConfig::default()
+    };
     assert!(
         is_at_emergency_limit(997_000, &config),
         "997k tokens should trigger at exactly the emergency limit"
@@ -55,7 +64,10 @@ fn tc_2_5_04_small_context_window() {
     let config = CompactConfig {
         context_window: 8_000,
         emergency_buffer: 3_000,
-        ..CompactConfig::default()
+        ..CompactConfig {
+            context_window: 1_000_000,
+            ..CompactConfig::default()
+        }
     };
     assert_eq!(emergency_limit(&config), 7_200);
     assert!(
@@ -75,7 +87,10 @@ fn emergency_check_ignores_enabled_flag() {
     // Emergency is the safety net — it fires even when compact is disabled
     let config = CompactConfig {
         enabled: false,
-        ..CompactConfig::default()
+        ..CompactConfig {
+            context_window: 1_000_000,
+            ..CompactConfig::default()
+        }
     };
     assert!(
         is_at_emergency_limit(998_000, &config),
@@ -102,7 +117,10 @@ fn autocompact_fires_before_emergency() {
     // so autocompact gets a chance to run before the safety net kicks in.
     use dream_engine_agent::compact::auto::should_autocompact;
 
-    let config = CompactConfig::default();
+    let config = CompactConfig {
+        context_window: 1_000_000,
+        ..CompactConfig::default()
+    };
 
     // Pick a token count that triggers autocompact but not emergency
     let token_count: u64 = 810_000;
@@ -121,7 +139,10 @@ fn both_trigger_near_limit() {
     // When very close to the limit, both autocompact and emergency should fire
     use dream_engine_agent::compact::auto::should_autocompact;
 
-    let config = CompactConfig::default();
+    let config = CompactConfig {
+        context_window: 1_000_000,
+        ..CompactConfig::default()
+    };
     let token_count: u64 = 998_000;
 
     assert!(should_autocompact(token_count, &config));

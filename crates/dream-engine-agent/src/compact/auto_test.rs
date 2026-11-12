@@ -13,15 +13,15 @@ mod tests {
 
     #[test]
     fn above_threshold_triggers() {
-        // Default is percentage mode: threshold = 1M * 80% = 800k.
+        // Default is percentage mode: threshold = 500k * 80% = 400k.
         let config = default_config();
-        assert!(should_autocompact(810_000, &config));
+        assert!(should_autocompact(410_000, &config));
     }
 
     #[test]
     fn below_threshold_does_not_trigger() {
         let config = default_config();
-        assert!(!should_autocompact(790_000, &config));
+        assert!(!should_autocompact(390_000, &config));
     }
 
     #[test]
@@ -118,9 +118,10 @@ mod tests {
     fn threshold_pct_none_uses_default_logic() {
         let config = CompactConfig {
             autocompact_threshold_pct: None,
+            context_window: 1_000_000,
             ..default_config()
         };
-        // Absolute-buffer formula against the 1M default window:
+        // Absolute-buffer formula against a 1M window:
         // threshold = 1M - 20k - 13k = 967k
         assert!(!should_autocompact(966_999, &config));
         assert!(should_autocompact(967_000, &config));

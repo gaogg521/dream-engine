@@ -4,8 +4,13 @@ use super::*;
 mod tests {
     use super::*;
 
+    /// The limit formulas are exercised against a 1M window, independent of
+    /// whatever window the engine assumes by default.
     fn default_config() -> CompactConfig {
-        CompactConfig::default()
+        CompactConfig {
+            context_window: 1_000_000,
+            ..CompactConfig::default()
+        }
     }
 
     // ── is_at_emergency_limit ──────────────────────────────────────────

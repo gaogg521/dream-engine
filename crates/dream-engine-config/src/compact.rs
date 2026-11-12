@@ -132,13 +132,20 @@ impl Default for CompactConfig {
 /// a session on a large-window model stopped at 197k tokens with "context
 /// window nearly full" while the model still had most of its window free.
 ///
-/// This is a default, not a measurement. A model whose real window is smaller
+/// Then 1M, so that large-window models were not stopped early. Real sessions
+/// showed the opposite cost: gateways advertise 1M while the model behind them
+/// degrades silently at 200k-300k (empty replies, timeouts, turns that promise
+/// a tool call and never make it), and with the trigger at 800k nothing ever
+/// compacted. 500k is the compromise: a trigger at 400k still leaves a real
+/// 1M model most of its window, and it is reachable before the worst of that
+/// degradation. The engine additionally narrows the window further on its own
+/// when it sees such a failure at a large context.
+///
+/// This is a default, not a measurement. A model whose real window differs
 /// must declare it (`[compact] context_window`, or the host's own per-model
-/// setting) — otherwise the first thing to notice the shortfall is the
-/// provider, and its prompt-too-long error is far less useful than the block
-/// this number drives.
+/// setting) — a declared value is always used as given, in either direction.
 fn default_context_window() -> usize {
-    1_000_000
+    500_000
 }
 fn default_output_reserve() -> usize {
     20_000

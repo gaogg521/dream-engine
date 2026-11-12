@@ -7,7 +7,7 @@ mod tests {
     #[test]
     fn default_values_match_spec() {
         let cfg = CompactConfig::default();
-        assert_eq!(cfg.context_window, 1_000_000);
+        assert_eq!(cfg.context_window, 500_000);
         assert_eq!(cfg.output_reserve, 20_000);
         assert_eq!(cfg.autocompact_buffer, 13_000);
         assert_eq!(cfg.emergency_buffer, 3_000);

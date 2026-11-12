@@ -108,15 +108,15 @@ fn default_config() -> CompactConfig {
 
 #[test]
 fn tc_2_4_01_above_threshold_triggers() {
-    // Default is percentage mode: threshold = 1M * 80% = 800k.
-    assert!(should_autocompact(810_000, &default_config()));
+    // Default is percentage mode: threshold = 500k * 80% = 400k.
+    assert!(should_autocompact(410_000, &default_config()));
 }
 
 // ── TC-2.4-02: Below threshold does not trigger ─────────────────────────────
 
 #[test]
 fn tc_2_4_02_below_threshold_does_not_trigger() {
-    assert!(!should_autocompact(790_000, &default_config()));
+    assert!(!should_autocompact(390_000, &default_config()));
 }
 
 // ── TC-2.4-03: Exact threshold triggers ─────────────────────────────────────

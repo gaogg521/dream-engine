@@ -5,7 +5,7 @@
 //! model behind them quietly stops working — empty replies, requests that run
 //! into the timeout, or turns that promise an action and never issue the tool
 //! call. Nothing in the response says "too long", and because the window is
-//! assumed to be 1M when nobody declared one, autocompact never fires, so the
+//! assumed to be large (500k by default, or whatever the gateway advertises), autocompact fires too late, so the
 //! session stays in that state indefinitely.
 //!
 //! The only evidence available is the failure itself together with how large
