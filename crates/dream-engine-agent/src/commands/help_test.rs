@@ -64,6 +64,7 @@ mod tests {
         let context_tools = Vec::new();
         let config = dream_engine_config::compact::CompactConfig::default();
 
+        let mut total_usage = dream_engine_types::message::TokenUsage::default();
         let mut ctx = CommandContext {
             messages: &mut messages,
             compact_state: &mut state,
@@ -76,6 +77,8 @@ mod tests {
             prompt_usage: &prompt_usage,
             context_tools: &context_tools,
             dynamic_system_tokens: 0,
+            system_prompt: "",
+            total_usage: &mut total_usage,
         };
 
         let cmd = HelpCommand;
@@ -104,6 +107,7 @@ mod tests {
         let context_tools = Vec::new();
         let config = dream_engine_config::compact::CompactConfig::default();
 
+        let mut total_usage = dream_engine_types::message::TokenUsage::default();
         let mut ctx = CommandContext {
             messages: &mut messages,
             compact_state: &mut state,
@@ -116,6 +120,8 @@ mod tests {
             prompt_usage: &prompt_usage,
             context_tools: &context_tools,
             dynamic_system_tokens: 0,
+            system_prompt: "",
+            total_usage: &mut total_usage,
         };
 
         let cmd = HelpCommand;

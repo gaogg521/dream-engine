@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
+use dream_engine_agent::compact::prompt::build_compact_prompt;
 use dream_engine_agent::engine::AgentEngine;
 use dream_engine_agent::error::AgentError;
 use dream_engine_agent::output::OutputSink;
@@ -21,7 +22,7 @@ use dream_engine_config::compact::CompactConfig;
 use dream_engine_providers::{LlmProvider, ProviderError};
 use dream_engine_tools::registry::ToolRegistry;
 use dream_engine_types::llm::{LlmEvent, LlmRequest};
-use dream_engine_types::message::{StopReason, TokenUsage};
+use dream_engine_types::message::{ContentBlock, StopReason, TokenUsage};
 use tempfile::tempdir;
 
 use common::test_config;
@@ -30,6 +31,23 @@ use common::test_config;
 
 fn silent_output() -> Arc<dyn OutputSink> {
     Arc::new(TerminalSink::new(true))
+}
+
+/// Whether this is the request autocompact sends: the conversation followed by
+/// the compact instruction.
+///
+/// Keyed on the instruction, not on the request being tool-less. The summary
+/// request used to carry no tools, and mocks that leaned on that quietly stopped
+/// recognising it once it began continuing the live conversation (same system
+/// prompt, same tools) so the provider can serve the history from cache.
+fn is_summary_request(request: &LlmRequest) -> bool {
+    let instruction = build_compact_prompt();
+    request.messages.last().is_some_and(|message| {
+        message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Text { text } if *text == instruction))
+    })
 }
 
 /// A mock provider that returns configurable per-turn events.
@@ -427,7 +445,7 @@ async fn tc_2_6_02_micro_before_auto_execution_order() {
     #[async_trait]
     impl LlmProvider for OrderProvider {
         async fn stream(&self, request: &LlmRequest) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
-            let is_compact = request.tools.is_empty();
+            let is_compact = is_summary_request(request);
 
             if is_compact {
                 // Capture messages that autocompact sends to the LLM
@@ -581,7 +599,7 @@ async fn tc_2_6_e2e_02_micro_and_auto_cooperative() {
     #[async_trait]
     impl LlmProvider for CoopProvider {
         async fn stream(&self, request: &LlmRequest) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
-            let is_compact = request.tools.is_empty();
+            let is_compact = is_summary_request(request);
 
             if is_compact {
                 *self.compact_calls.lock().unwrap() += 1;
@@ -721,9 +739,8 @@ async fn tc_2_6_e2e_03_circuit_breaker_stops_retries() {
                 v
             };
 
-            // Compact summary calls have no tools defined and include the
-            // compact prompt in messages. We detect them by checking tools.is_empty().
-            let is_compact_call = request.tools.is_empty();
+            // Compact summary calls end with the compact prompt.
+            let is_compact_call = is_summary_request(request);
 
             if is_compact_call {
                 return Err(ProviderError::Api {

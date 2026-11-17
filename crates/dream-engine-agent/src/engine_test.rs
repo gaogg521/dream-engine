@@ -721,6 +721,86 @@ mod tests_compact {
         }
     }
 
+    /// Answers every request with a summary that bills `usage`, and keeps the
+    /// requests so a test can inspect what the summary call actually carried.
+    struct RecordingSummaryProvider {
+        usage: TokenUsage,
+        requests: Mutex<Vec<LlmRequest>>,
+    }
+
+    impl RecordingSummaryProvider {
+        fn new(usage: TokenUsage) -> Arc<Self> {
+            Arc::new(Self {
+                usage,
+                requests: Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for RecordingSummaryProvider {
+        async fn stream(&self, request: &LlmRequest) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+            self.requests.lock().unwrap().push(request.clone());
+            let (tx, rx) = mpsc::channel(4);
+            tx.send(LlmEvent::TextDelta("<summary>condensed context</summary>".into()))
+                .await
+                .unwrap();
+            tx.send(LlmEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: self.usage.clone(),
+            })
+            .await
+            .unwrap();
+            Ok(rx)
+        }
+    }
+
+    /// A declared tool, so a summary request that drops the live tools is caught.
+    struct ProbeTool;
+
+    #[async_trait::async_trait]
+    impl dream_engine_tools::Tool for ProbeTool {
+        fn name(&self) -> &str {
+            "ProbeTool"
+        }
+
+        fn description(&self) -> &str {
+            "declared so the summary request has to carry it"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            json!({ "type": "object" })
+        }
+
+        fn is_concurrency_safe(&self, _: &serde_json::Value) -> bool {
+            true
+        }
+
+        async fn execute(&self, _: serde_json::Value) -> dream_engine_types::tool::ToolResult {
+            dream_engine_types::tool::ToolResult {
+                content: String::new(),
+                is_error: false,
+            }
+        }
+
+        fn category(&self) -> dream_engine_protocol::events::ToolCategory {
+            dream_engine_protocol::events::ToolCategory::Info
+        }
+    }
+
+    fn alternating_conversation(len: usize) -> Vec<Message> {
+        (0..len)
+            .map(|index| {
+                Message::new(
+                    if index % 2 == 0 { Role::User } else { Role::Assistant },
+                    vec![ContentBlock::Text {
+                        text: format!("turn-{index}"),
+                    }],
+                )
+            })
+            .collect()
+    }
+
     fn make_compact_engine(
         compact_config: CompactConfig,
         compact_state: CompactState,
@@ -1438,6 +1518,129 @@ mod tests_compact {
             engine.compact_state.last_input_tokens,
             engine.context_state.context_usage
         );
+    }
+
+    /// The summary request must continue the live conversation — same system
+    /// prompt, same tools, same history — or none of it can come from the
+    /// provider's prompt cache, and that request is the biggest one a session
+    /// sends. It must also show up in the session totals.
+    #[tokio::test]
+    async fn autocompact_continues_the_live_conversation_and_counts_its_usage() {
+        let config = CompactConfig {
+            context_window: 100,
+            autocompact_threshold_pct: Some(50),
+            emergency_buffer: 10,
+            ..Default::default()
+        };
+        let mut state = CompactState::new();
+        state.last_input_tokens = 60;
+        let messages = alternating_conversation(3);
+        let mut engine = make_compact_engine(config, state, messages.clone());
+        engine.system_prompt = "LIVE-SYSTEM".to_string();
+        engine.tools.register(Box::new(ProbeTool));
+        engine.total_usage = TokenUsage {
+            input_tokens: 1_000,
+            output_tokens: 100,
+            cache_read_tokens: 800,
+            ..Default::default()
+        };
+        let provider = RecordingSummaryProvider::new(TokenUsage {
+            input_tokens: 400,
+            output_tokens: 20,
+            cache_read_tokens: 390,
+            ..Default::default()
+        });
+        engine.provider = provider.clone();
+        engine.context_state.replace_with_provider_usage(60);
+        engine.sync_compact_watermark();
+
+        engine.run_compaction().await.unwrap();
+
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].system, "LIVE-SYSTEM");
+        assert!(requests[0].tools.iter().any(|tool| tool.name == "ProbeTool"));
+        assert_eq!(requests[0].messages.len(), messages.len() + 1);
+
+        assert_eq!(engine.total_usage.input_tokens, 1_400);
+        assert_eq!(engine.total_usage.output_tokens, 120);
+        assert_eq!(engine.total_usage.cache_read_tokens, 1_190);
+        // The summary request is not the conversation: the context size comes
+        // from the new history, not from what that request billed.
+        assert_eq!(engine.context_state.source, ContextUsageSource::LocalProjected);
+    }
+
+    #[tokio::test]
+    async fn autocompact_carries_the_plan_mode_system_prompt_when_plan_mode_is_active() {
+        let config = CompactConfig {
+            context_window: 100,
+            autocompact_threshold_pct: Some(50),
+            emergency_buffer: 10,
+            ..Default::default()
+        };
+        let mut state = CompactState::new();
+        state.last_input_tokens = 60;
+        let mut engine = make_compact_engine(config, state, alternating_conversation(3));
+        engine.system_prompt = "LIVE-SYSTEM".to_string();
+        engine.plan_state.is_active = true;
+        let provider = RecordingSummaryProvider::new(TokenUsage::default());
+        engine.provider = provider.clone();
+        engine.context_state.replace_with_provider_usage(60);
+        engine.sync_compact_watermark();
+        let expected_system = engine.request_system();
+
+        engine.run_compaction().await.unwrap();
+
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests[0].system, expected_system);
+        assert!(expected_system.starts_with("LIVE-SYSTEM"));
+        assert!(
+            expected_system.len() > "LIVE-SYSTEM".len(),
+            "plan instructions are appended"
+        );
+    }
+
+    /// `/compact` is a separate code path from the automatic pass.
+    #[tokio::test]
+    async fn manual_compact_continues_the_live_conversation_and_reports_cumulative_usage() {
+        let mut engine = make_compact_engine(
+            CompactConfig::default(),
+            CompactState::new(),
+            alternating_conversation(6),
+        );
+        engine.system_prompt = "LIVE-SYSTEM".to_string();
+        engine.tools.register(Box::new(ProbeTool));
+        engine.total_usage = TokenUsage {
+            input_tokens: 1_000,
+            output_tokens: 100,
+            cache_read_tokens: 800,
+            ..Default::default()
+        };
+        let provider = RecordingSummaryProvider::new(TokenUsage {
+            input_tokens: 400,
+            output_tokens: 20,
+            cache_read_tokens: 390,
+            ..Default::default()
+        });
+        engine.provider = provider.clone();
+
+        let result = engine
+            .handle_command("/compact")
+            .await
+            .unwrap()
+            .expect("/compact is a registered command");
+
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].system, "LIVE-SYSTEM");
+        assert!(requests[0].tools.iter().any(|tool| tool.name == "ProbeTool"));
+        assert_eq!(requests[0].messages.len(), 7);
+
+        assert_eq!(engine.total_usage.input_tokens, 1_400);
+        // The host sees cumulative usage, not a zeroed turn that would blank
+        // the breakdown it was already showing.
+        assert_eq!(result.usage.input_tokens, 1_400);
+        assert_eq!(result.usage.cache_read_tokens, 1_190);
     }
 
     // -- Disabled config skips micro and auto but not emergency --

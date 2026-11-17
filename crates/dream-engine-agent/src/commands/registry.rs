@@ -8,7 +8,7 @@ use crate::context_usage::{ContextState, PromptUsage};
 use crate::output::OutputSink;
 use dream_engine_config::compact::CompactConfig;
 use dream_engine_providers::LlmProvider;
-use dream_engine_types::message::Message;
+use dream_engine_types::message::{Message, TokenUsage};
 use dream_engine_types::tool::ToolDef;
 
 /// User-facing metadata for a registered slash command.
@@ -43,6 +43,10 @@ pub struct CommandContext<'a> {
     pub(crate) prompt_usage: &'a PromptUsage,
     pub(crate) context_tools: &'a [ToolDef],
     pub(crate) dynamic_system_tokens: u64,
+    /// The system prompt the live conversation's requests carry.
+    pub(crate) system_prompt: &'a str,
+    /// The session's running token totals, for requests that bill outside a turn.
+    pub(crate) total_usage: &'a mut TokenUsage,
 }
 
 /// A slash command that can be executed in the REPL.

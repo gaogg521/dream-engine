@@ -375,6 +375,8 @@ A cache-friendly context strategy that bounds each tool result once when it ente
 
 - **Autocompact** triggers when input tokens reach a threshold. By default this is `context_window - output_reserve - autocompact_buffer` (200,000 - 20,000 - 13,000 = 167,000 tokens). Alternatively, set `autocompact_threshold_pct` to trigger at a percentage of the context window (e.g. `50` = 50% of 200k = 100k tokens). The agent calls the LLM to produce a conversation summary, then replaces history with a compact boundary marker. A circuit breaker stops retrying after 3 consecutive failures.
 
+  The summary request continues the live conversation — same system prompt, same tool declarations, same history, with the summary instruction appended last — so a provider with prompt caching can serve the whole history from cache instead of billing a window-sized input at full price. If that request is refused as too long, or the model answers with a tool call instead of text, the engine falls back to a standalone request (its own system prompt, no tools). The summary request's token usage is added to the session totals (it is not counted as the context size), and `/compact` takes the same path.
+
 - **Emergency** is the last safety net at `context_window - emergency_buffer` (default: 197,000 tokens). Always active regardless of config. Blocks API calls and prompts the user to compact or start a new conversation.
 
 ### Configuration

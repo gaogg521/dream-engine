@@ -12,15 +12,19 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use dream_engine_agent::compact::auto::{
-    CompactError, autocompact, extract_compact_metadata, is_compact_boundary, should_autocompact,
+    CompactError, CompactPrefix, autocompact, autocompact_with_prefix, extract_compact_metadata, is_compact_boundary,
+    should_autocompact,
 };
-use dream_engine_agent::compact::prompt::{build_compact_prompt, build_summary_content, format_compact_summary};
+use dream_engine_agent::compact::prompt::{
+    COMPACT_SYSTEM_PROMPT, build_compact_prompt, build_summary_content, format_compact_summary,
+};
 use dream_engine_agent::compact::state::CompactState;
 use dream_engine_config::compact::CompactConfig;
 use dream_engine_providers::{LlmProvider, ProviderError};
 use dream_engine_types::compact::CompactTrigger;
 use dream_engine_types::llm::{LlmEvent, LlmRequest};
 use dream_engine_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
+use dream_engine_types::tool::ToolDef;
 
 // ── Mock provider ───────────────────────────────────────────────────────────
 
@@ -492,4 +496,330 @@ fn summary_content_auto_has_continuation() {
 fn summary_content_manual_no_continuation() {
     let content = build_summary_content("Summary:\ntest", false);
     assert!(!content.contains("Continue the conversation"));
+}
+
+// ── Shared-prefix compaction ────────────────────────────────────────────────
+//
+// The summary request is the largest input a session sends. These tests pin
+// the property that keeps it cheap — it is an exact extension of the live
+// conversation — and the two fallbacks that exist only because of it.
+
+/// Records every request it receives, then answers from a queue.
+struct RecordingProvider {
+    inner: MockProvider,
+    requests: Mutex<Vec<LlmRequest>>,
+}
+
+impl RecordingProvider {
+    fn new(responses: Vec<Result<Vec<LlmEvent>, ProviderError>>) -> Self {
+        Self {
+            inner: MockProvider::new(responses),
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn requests(&self) -> Vec<LlmRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl LlmProvider for RecordingProvider {
+    async fn stream(&self, request: &LlmRequest) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+        self.requests.lock().unwrap().push(request.clone());
+        self.inner.stream(request).await
+    }
+}
+
+fn live_prefix() -> CompactPrefix {
+    CompactPrefix {
+        system: "LIVE-SYSTEM-PROMPT".to_string(),
+        tools: vec![ToolDef {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+            deferred: false,
+        }],
+    }
+}
+
+fn summary_response(text: &str, usage: TokenUsage) -> Result<Vec<LlmEvent>, ProviderError> {
+    Ok(vec![
+        LlmEvent::TextDelta(text.to_string()),
+        LlmEvent::Done {
+            stop_reason: StopReason::EndTurn,
+            usage,
+        },
+    ])
+}
+
+fn tool_call_response(usage: TokenUsage) -> Result<Vec<LlmEvent>, ProviderError> {
+    Ok(vec![
+        LlmEvent::ToolUse {
+            id: "call_1".to_string(),
+            name: "Read".to_string(),
+            input: serde_json::json!({}),
+            extra: None,
+        },
+        LlmEvent::Done {
+            stop_reason: StopReason::ToolUse,
+            usage,
+        },
+    ])
+}
+
+fn message_text(message: &Message) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn shared_prefix_request_is_an_exact_extension_of_the_live_conversation() {
+    let provider = RecordingProvider::new(vec![summary_response("<summary>ok</summary>", TokenUsage::default())]);
+    let messages = sample_conversation(6);
+    let prefix = live_prefix();
+    let mut state = CompactState::new();
+
+    autocompact_with_prefix(
+        &provider,
+        &messages,
+        "test-model",
+        &default_config(),
+        &mut state,
+        Some(&prefix),
+    )
+    .await
+    .expect("autocompact should succeed");
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 1, "a healthy compaction is one request");
+    let request = &requests[0];
+
+    // Everything a provider caches on — system, tools, history — is untouched.
+    assert_eq!(request.system, "LIVE-SYSTEM-PROMPT");
+    assert_eq!(request.tools.len(), 1);
+    assert_eq!(request.tools[0].name, "Read");
+    assert_eq!(request.messages.len(), messages.len() + 1);
+    for (sent, original) in request.messages.iter().zip(&messages) {
+        assert_eq!(sent.role, original.role);
+        assert_eq!(message_text(sent), message_text(original));
+    }
+
+    // Only the instruction at the end is new, and it still forbids tools.
+    let last = request.messages.last().unwrap();
+    assert_eq!(last.role, Role::User);
+    assert_eq!(message_text(last), build_compact_prompt());
+    assert!(
+        request.thinking.is_none(),
+        "thinking is not mirrored into the summary request"
+    );
+}
+
+#[tokio::test]
+async fn standalone_form_keeps_its_own_system_prompt_and_no_tools() {
+    let provider = RecordingProvider::new(vec![summary_response("<summary>ok</summary>", TokenUsage::default())]);
+    let messages = sample_conversation(6);
+    let mut state = CompactState::new();
+
+    autocompact(&provider, &messages, "test-model", &default_config(), &mut state)
+        .await
+        .expect("autocompact should succeed");
+
+    let requests = provider.requests();
+    assert_eq!(requests[0].system, COMPACT_SYSTEM_PROMPT);
+    assert!(requests[0].tools.is_empty());
+}
+
+#[tokio::test]
+async fn result_reports_what_the_summary_request_consumed() {
+    let usage = TokenUsage {
+        input_tokens: 400_000,
+        output_tokens: 3_000,
+        cache_creation_tokens: 1_000,
+        cache_read_tokens: 390_000,
+    };
+    let provider = RecordingProvider::new(vec![summary_response("<summary>ok</summary>", usage)]);
+    let prefix = live_prefix();
+    let mut state = CompactState::new();
+
+    let result = autocompact_with_prefix(
+        &provider,
+        &sample_conversation(6),
+        "test-model",
+        &default_config(),
+        &mut state,
+        Some(&prefix),
+    )
+    .await
+    .expect("autocompact should succeed");
+
+    assert_eq!(result.usage.input_tokens, 400_000);
+    assert_eq!(result.usage.output_tokens, 3_000);
+    assert_eq!(result.usage.cache_creation_tokens, 1_000);
+    assert_eq!(result.usage.cache_read_tokens, 390_000);
+}
+
+#[tokio::test]
+async fn tool_call_instead_of_text_falls_back_to_the_standalone_request() {
+    // With the live tools declared the model can answer with a tool call,
+    // which carries no summary. That must not fail the compaction.
+    let wasted = TokenUsage {
+        input_tokens: 400_000,
+        output_tokens: 50,
+        cache_read_tokens: 390_000,
+        ..Default::default()
+    };
+    let standalone = TokenUsage {
+        input_tokens: 380_000,
+        output_tokens: 2_000,
+        ..Default::default()
+    };
+    let provider = RecordingProvider::new(vec![
+        tool_call_response(wasted),
+        summary_response("<summary>from fallback</summary>", standalone),
+    ]);
+    let prefix = live_prefix();
+    let mut state = CompactState::new();
+
+    let result = autocompact_with_prefix(
+        &provider,
+        &sample_conversation(6),
+        "test-model",
+        &default_config(),
+        &mut state,
+        Some(&prefix),
+    )
+    .await
+    .expect("the fallback should rescue the compaction");
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].system, "LIVE-SYSTEM-PROMPT");
+    assert_eq!(requests[1].system, COMPACT_SYSTEM_PROMPT);
+    assert!(requests[1].tools.is_empty());
+    assert_eq!(state.consecutive_failures, 0);
+    assert!(message_text(&result.messages[1]).contains("from fallback"));
+
+    // Both requests were billed, including the one whose output was discarded.
+    assert_eq!(result.usage.input_tokens, 780_000);
+    assert_eq!(result.usage.output_tokens, 2_050);
+    assert_eq!(result.usage.cache_read_tokens, 390_000);
+}
+
+#[tokio::test]
+async fn shared_prefix_refused_as_too_long_retries_standalone_without_truncating() {
+    // The live system prompt and tools make this request bigger than the
+    // standalone one. Losing history to fit them would be the wrong trade
+    // while the standalone form still fits as is.
+    let provider = RecordingProvider::new(vec![
+        Err(ProviderError::PromptTooLong("prompt exceeds limit".to_string())),
+        summary_response("<summary>fits</summary>", TokenUsage::default()),
+    ]);
+    let messages = sample_conversation(10);
+    let prefix = live_prefix();
+    let mut state = CompactState::new();
+
+    autocompact_with_prefix(
+        &provider,
+        &messages,
+        "test-model",
+        &default_config(),
+        &mut state,
+        Some(&prefix),
+    )
+    .await
+    .expect("the standalone retry should succeed");
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].system, COMPACT_SYSTEM_PROMPT);
+    assert!(requests[1].tools.is_empty());
+    assert_eq!(
+        requests[1].messages.len(),
+        messages.len() + 1,
+        "no history was dropped for the retry"
+    );
+    assert_eq!(state.consecutive_failures, 0);
+}
+
+#[tokio::test]
+async fn standalone_request_that_is_still_too_long_truncates_as_before() {
+    let provider = RecordingProvider::new(vec![
+        Err(ProviderError::PromptTooLong("shared".to_string())),
+        Err(ProviderError::PromptTooLong("standalone".to_string())),
+        summary_response("<summary>after truncation</summary>", TokenUsage::default()),
+    ]);
+    let messages = sample_conversation(10);
+    let prefix = live_prefix();
+    let mut state = CompactState::new();
+
+    autocompact_with_prefix(
+        &provider,
+        &messages,
+        "test-model",
+        &default_config(),
+        &mut state,
+        Some(&prefix),
+    )
+    .await
+    .expect("truncation retry should succeed");
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    // 10 messages, oldest 20% dropped, summary prompt re-added.
+    assert_eq!(requests[2].messages.len(), 8 + 1);
+}
+
+#[tokio::test]
+async fn an_empty_reply_without_a_tool_call_is_not_retried() {
+    // Only a tool call explains an empty reply to the tool-bearing request. A
+    // reply that is just empty gives no reason to expect the standalone form to
+    // do better, and sending a window-sized history again to find out is the
+    // cost this whole path exists to avoid.
+    let provider = RecordingProvider::new(vec![summary_response("", TokenUsage::default())]);
+    let prefix = live_prefix();
+    let mut state = CompactState::new();
+
+    let result = autocompact_with_prefix(
+        &provider,
+        &sample_conversation(6),
+        "test-model",
+        &default_config(),
+        &mut state,
+        Some(&prefix),
+    )
+    .await;
+
+    assert!(matches!(result, Err(CompactError::EmptyResponse)));
+    assert_eq!(provider.requests().len(), 1, "the history was sent once");
+    assert_eq!(state.consecutive_failures, 1);
+}
+
+#[tokio::test]
+async fn no_text_from_either_request_fails_the_compaction() {
+    let provider = RecordingProvider::new(vec![
+        tool_call_response(TokenUsage::default()),
+        tool_call_response(TokenUsage::default()),
+    ]);
+    let prefix = live_prefix();
+    let mut state = CompactState::new();
+
+    let result = autocompact_with_prefix(
+        &provider,
+        &sample_conversation(6),
+        "test-model",
+        &default_config(),
+        &mut state,
+        Some(&prefix),
+    )
+    .await;
+
+    assert!(matches!(result, Err(CompactError::EmptyResponse)));
+    assert_eq!(state.consecutive_failures, 1);
 }

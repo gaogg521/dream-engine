@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::cache_diagnostics::{CacheBreakDetector, CacheDiagnostic, CacheStats};
 use crate::commands::{CommandContext, CommandRegistry, CommandResult, CommandSpec, SlashCommand, default_registry};
-use crate::compact::auto::{CompactError, autocompact, should_autocompact};
+use crate::compact::auto::{CompactError, CompactPrefix, autocompact_with_prefix, should_autocompact};
 use crate::compact::emergency::{emergency_limit, is_at_emergency_limit};
 use crate::compact::estimate::{estimate_tokens_from_tool_image, estimate_tokens_from_tool_result};
 use crate::compact::micro::{microcompact, should_microcompact};
@@ -779,18 +779,26 @@ impl AgentEngine {
         }
     }
 
+    /// The system prompt every request of this conversation carries: the base
+    /// prompt, plus the plan-mode instructions while plan mode is active.
+    ///
+    /// One definition on purpose. Anything that must continue the conversation
+    /// from a provider's prompt cache (the summary request in particular) has
+    /// to send these exact bytes, and two copies of this rule would drift.
+    fn request_system(&self) -> String {
+        if self.plan_state.is_active {
+            format!("{}\n\n{}", self.system_prompt, plan_mode_instructions())
+        } else {
+            self.system_prompt.clone()
+        }
+    }
+
     /// Build the next provider request, applying plan-mode tool/system filtering
     /// and recording the prompt state for cache diagnostics.
     fn build_request(&mut self, kind: TurnKind) -> LlmRequest {
         let image_input = self.compat.image_input();
         let tools = self.tool_definitions_for_turn(kind);
-
-        // Build system prompt: append plan mode instructions when active
-        let system = if self.plan_state.is_active {
-            format!("{}\n\n{}", self.system_prompt, plan_mode_instructions())
-        } else {
-            self.system_prompt.clone()
-        };
+        let system = self.request_system();
 
         // Record prompt state for cache diagnostics
         self.cache_detector.record_request(&system, &tools);
@@ -1510,10 +1518,7 @@ impl AgentEngine {
     /// Fold one turn's token usage into the running totals and replace the
     /// best-known context size with the provider's exact turn total.
     fn record_turn_usage(&mut self, turn_usage: &TokenUsage) -> bool {
-        self.total_usage.input_tokens += turn_usage.input_tokens;
-        self.total_usage.output_tokens += turn_usage.output_tokens;
-        self.total_usage.cache_creation_tokens += turn_usage.cache_creation_tokens;
-        self.total_usage.cache_read_tokens += turn_usage.cache_read_tokens;
+        self.total_usage.accumulate(turn_usage);
 
         let context_usage = turn_usage.input_tokens.saturating_add(turn_usage.output_tokens);
         if context_usage == 0 {
@@ -1575,6 +1580,19 @@ impl AgentEngine {
             }
         }
         true
+    }
+
+    /// Count a request that is not a conversation turn — the compaction
+    /// summary — in the running totals.
+    ///
+    /// Totals only. The context size is deliberately left alone: that request
+    /// carried the whole history plus an instruction, and treating it as the
+    /// conversation's size would report a context that is about to be replaced.
+    /// Skipping it entirely is the other mistake: it is the single largest
+    /// input a session sends, and leaving it out makes both the cost and the
+    /// cache hit rate read better than the provider's own bill.
+    fn record_auxiliary_usage(&mut self, usage: &TokenUsage) {
+        self.total_usage.accumulate(usage);
     }
 
     /// Add content produced after the provider usage snapshot. Every final
@@ -1646,16 +1664,24 @@ impl AgentEngine {
         let provider = Arc::clone(&self.provider);
         let mut compact_messages = self.messages.clone();
         project_image_input(&mut compact_messages, self.compat.image_input(), &self.model);
-        match autocompact(
+        // Continue the live conversation rather than start a new one, so the
+        // provider can serve the history from its prompt cache.
+        let prefix = CompactPrefix {
+            system: self.request_system(),
+            tools: self.tool_definitions_for_turn(TurnKind::Normal),
+        };
+        match autocompact_with_prefix(
             provider.as_ref(),
             &compact_messages,
             &self.model,
             &self.compact_config,
             &mut self.compact_state,
+            Some(&prefix),
         )
         .await
         {
             Ok(result) => {
+                self.record_auxiliary_usage(&result.usage);
                 self.output.emit_info_coded(
                     "AUTOCOMPACT_DONE",
                     serde_json::json!({
@@ -1982,7 +2008,10 @@ impl AgentEngine {
                 Ok(Some(AgentResult {
                     text: String::new(),
                     stop_reason: StopReason::EndTurn,
-                    usage: TokenUsage::default(),
+                    // Cumulative like every other result. A zeroed usage here
+                    // reads to the host as "this turn cost nothing" and
+                    // replaces the breakdown it was showing.
+                    usage: self.total_usage.clone(),
                     turns: 0,
                 }))
             }
@@ -1996,7 +2025,9 @@ impl AgentEngine {
                 Ok(Some(AgentResult {
                     text: String::new(),
                     stop_reason: StopReason::EndTurn,
-                    usage: TokenUsage::default(),
+                    // `/compact` lands here: its summary request is already in
+                    // the totals, and this is the only way the host sees it.
+                    usage: self.total_usage.clone(),
                     turns: 0,
                 }))
             }
@@ -2015,6 +2046,7 @@ impl AgentEngine {
         let cmd = self.commands.find(command.name)?;
         let context_tools = self.tool_definitions_for_turn(TurnKind::Normal);
         let dynamic_system_tokens = self.dynamic_system_tokens();
+        let system_prompt = self.request_system();
 
         // We need to borrow self mutably for CommandContext while also
         // borrowing self.commands immutably (already done above via find()).
@@ -2034,6 +2066,8 @@ impl AgentEngine {
             prompt_usage: &self.prompt_usage,
             context_tools: &context_tools,
             dynamic_system_tokens,
+            system_prompt: &system_prompt,
+            total_usage: &mut self.total_usage,
         };
 
         // SAFETY: cmd_ptr points to a command inside self.commands which is only

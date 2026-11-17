@@ -10,7 +10,9 @@ use dream_engine_providers::{LlmProvider, ProviderError};
 use dream_engine_types::compact::{CompactMetadata, CompactTrigger};
 use dream_engine_types::llm::{LlmEvent, LlmRequest};
 use dream_engine_types::message::{ContentBlock, Message, Role, TokenUsage};
+use dream_engine_types::tool::ToolDef;
 use tokio::sync::mpsc;
+use tracing::{info, warn};
 
 use super::prompt::{
     COMPACT_MAX_OUTPUT_TOKENS, COMPACT_SYSTEM_PROMPT, build_compact_prompt, build_summary_content,
@@ -36,6 +38,25 @@ pub struct CompactResult {
     pub messages_summarized: usize,
     /// Best-known context token count before compaction.
     pub pre_compact_tokens: u64,
+    /// Tokens the summary request(s) consumed, including an attempt whose
+    /// output was thrown away. This is what the provider billed, not the size
+    /// of the new context: callers add it to cumulative totals only.
+    pub usage: TokenUsage,
+}
+
+/// The live conversation's system prompt and tool declarations.
+///
+/// Providers cache by request prefix, and these two come first. A summary
+/// request that carries its own tiny system prompt and no tools therefore
+/// diverges from the conversation at the very first token, and the whole
+/// history — close to the context window by definition, since that is what
+/// triggers compaction — is billed as uncached input. Sending the live ones
+/// instead keeps the request an exact extension of the conversation, so only
+/// the summary instruction at the end is new.
+#[derive(Debug, Clone)]
+pub struct CompactPrefix {
+    pub system: String,
+    pub tools: Vec<ToolDef>,
 }
 
 /// Errors specific to autocompact.
@@ -74,22 +95,45 @@ pub fn should_autocompact(context_tokens: u64, config: &CompactConfig) -> bool {
 
 // ── Core autocompact ────────────────────────────────────────────────────────
 
-/// Execute autocompact: call LLM to summarize the conversation.
+/// Execute autocompact with a standalone summary request (its own system
+/// prompt, no tools).
 ///
-/// 1. Build a summary prompt and send conversation + prompt to the LLM.
-/// 2. If the prompt is too long, truncate oldest 20% messages and retry
-///    (up to [`MAX_PTL_RETRIES`] times).
-/// 3. Parse the `<summary>` from the response.
-/// 4. Return a [`CompactResult`] with boundary marker + summary messages.
-///
-/// On failure, increments `state.consecutive_failures`.
-/// On success, resets the failure counter.
+/// Prefer [`autocompact_with_prefix`] whenever the live conversation's system
+/// prompt and tools are at hand: this form shares no prompt-cache prefix with
+/// the conversation it summarizes.
 pub async fn autocompact(
     provider: &dyn LlmProvider,
     messages: &[Message],
     model: &str,
     config: &CompactConfig,
     state: &mut CompactState,
+) -> Result<CompactResult, CompactError> {
+    autocompact_with_prefix(provider, messages, model, config, state, None).await
+}
+
+/// Execute autocompact: call LLM to summarize the conversation.
+///
+/// 1. Build a summary prompt and send conversation + prompt to the LLM. With a
+///    `prefix`, the request reuses the live system prompt and tools so the
+///    provider can serve the whole history from its prompt cache.
+/// 2. If that request is refused as too long, or the model answers with a tool
+///    call instead of text, fall back to the standalone request below. Both
+///    can only happen because the prefix is bigger / tool-bearing; neither is
+///    a reason to fail a compaction that the standalone form can still do.
+/// 3. If the prompt is still too long, truncate oldest 20% messages and retry
+///    (up to [`MAX_PTL_RETRIES`] times).
+/// 4. Parse the `<summary>` from the response.
+/// 5. Return a [`CompactResult`] with boundary marker + summary messages.
+///
+/// On failure, increments `state.consecutive_failures`.
+/// On success, resets the failure counter.
+pub async fn autocompact_with_prefix(
+    provider: &dyn LlmProvider,
+    messages: &[Message],
+    model: &str,
+    config: &CompactConfig,
+    state: &mut CompactState,
+    prefix: Option<&CompactPrefix>,
 ) -> Result<CompactResult, CompactError> {
     // Circuit breaker check
     if state.is_circuit_broken(config) {
@@ -107,26 +151,71 @@ pub async fn autocompact(
     conv_messages.push(Message::new(Role::User, vec![ContentBlock::Text { text: prompt }]));
 
     let mut ptl_attempts = 0u32;
+    // Cleared once the shared-prefix request has been given up on.
+    let mut shared_prefix = prefix;
+    let mut usage = TokenUsage::default();
 
     let summary_text = loop {
-        let request = LlmRequest {
-            model: model.to_string(),
-            system: COMPACT_SYSTEM_PROMPT.to_string(),
-            messages: conv_messages.clone(),
-            tools: vec![],
-            max_tokens: Some(COMPACT_MAX_OUTPUT_TOKENS),
-            thinking: None,
-            reasoning_effort: None,
+        let request = match shared_prefix {
+            Some(live) => LlmRequest {
+                model: model.to_string(),
+                system: live.system.clone(),
+                messages: conv_messages.clone(),
+                tools: live.tools.clone(),
+                max_tokens: Some(COMPACT_MAX_OUTPUT_TOKENS),
+                // Deliberately not mirrored from the conversation: a thinking
+                // budget at or above the summary's output cap is rejected by
+                // providers that require `max_tokens` to exceed it.
+                thinking: None,
+                reasoning_effort: None,
+            },
+            None => LlmRequest {
+                model: model.to_string(),
+                system: COMPACT_SYSTEM_PROMPT.to_string(),
+                messages: conv_messages.clone(),
+                tools: vec![],
+                max_tokens: Some(COMPACT_MAX_OUTPUT_TOKENS),
+                thinking: None,
+                reasoning_effort: None,
+            },
         };
 
         match provider.stream(&request).await {
             Ok(rx) => match collect_stream_text(rx).await {
-                Ok((text, _usage)) => break text,
+                Ok(response) => {
+                    // Billed whether or not the text is used.
+                    usage.accumulate(&response.usage);
+                    if response.text.trim().is_empty() && response.called_tool && shared_prefix.is_some() {
+                        // The tools are declared on this request, so the model
+                        // may answer with a tool call despite the prompt. That
+                        // yields no text, and the standalone request, which
+                        // declares none, cannot do it. A reply that is merely
+                        // empty is not this case: repeating a request of this
+                        // size cannot be expected to fare better.
+                        warn!(
+                            target: "dream_engine_agent",
+                            "shared-prefix compaction answered with a tool call; retrying without tools"
+                        );
+                        shared_prefix = None;
+                        continue;
+                    }
+                    break response.text;
+                }
                 Err(e) => {
                     state.record_failure();
                     return Err(e);
                 }
             },
+            // The live system prompt and tools are part of this request and
+            // not of the standalone one, so it can be refused for length when
+            // the standalone form would fit. Try that before truncating.
+            Err(ProviderError::PromptTooLong(_)) if shared_prefix.is_some() => {
+                warn!(
+                    target: "dream_engine_agent",
+                    "shared-prefix compaction refused as too long; retrying without the live prefix"
+                );
+                shared_prefix = None;
+            }
             Err(ProviderError::PromptTooLong(_)) if ptl_attempts < MAX_PTL_RETRIES => {
                 ptl_attempts += 1;
                 // Remove the summary prompt (last msg), truncate, re-add prompt
@@ -184,25 +273,57 @@ pub async fn autocompact(
 
     state.record_success();
 
+    // Production-visible on purpose: this single request is the largest input
+    // a session sends, and whether it was served from cache is exactly what
+    // cost reports cannot show once it is missing from the session totals.
+    info!(
+        target: "dream_engine_agent",
+        shared_prefix = shared_prefix.is_some(),
+        input_tokens = usage.input_tokens,
+        cache_read_tokens = usage.cache_read_tokens,
+        cache_creation_tokens = usage.cache_creation_tokens,
+        output_tokens = usage.output_tokens,
+        messages_summarized,
+        "autocompact summary request finished"
+    );
+
     Ok(CompactResult {
         messages: vec![boundary_msg, summary_msg],
         messages_summarized,
         pre_compact_tokens,
+        usage,
     })
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/// What a summary request produced.
+struct SummaryResponse {
+    text: String,
+    usage: TokenUsage,
+    /// The model answered with a tool call. Ignored as output, but it explains
+    /// an empty `text` when the request declared tools.
+    called_tool: bool,
+}
+
 /// Collect all text from a streaming LLM response.
-async fn collect_stream_text(mut rx: mpsc::Receiver<LlmEvent>) -> Result<(String, TokenUsage), CompactError> {
+async fn collect_stream_text(mut rx: mpsc::Receiver<LlmEvent>) -> Result<SummaryResponse, CompactError> {
     let mut text = String::new();
+    let mut called_tool = false;
 
     while let Some(event) = rx.recv().await {
         match event {
             LlmEvent::TextDelta(delta) => text.push_str(&delta),
-            LlmEvent::Done { usage, .. } => return Ok((text, usage)),
+            LlmEvent::ToolUse { .. } | LlmEvent::ToolCallTruncated { .. } => called_tool = true,
+            LlmEvent::Done { usage, .. } => {
+                return Ok(SummaryResponse {
+                    text,
+                    usage,
+                    called_tool,
+                });
+            }
             LlmEvent::Error(e) => return Err(CompactError::StreamError(e)),
-            // Ignore thinking deltas and tool calls (shouldn't happen in compact)
+            // Thinking deltas and provider items carry no summary text.
             _ => {}
         }
     }

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use super::{CommandContext, CommandResult, SlashCommand};
-use crate::compact::auto;
+use crate::compact::auto::{self, CompactPrefix};
 use dream_engine_types::compact::{CompactMetadata, CompactTrigger};
 use dream_engine_types::message::ContentBlock;
 
@@ -28,16 +28,25 @@ impl SlashCommand for CompactCommand {
 
         let pre_tokens = ctx.compact_state.last_input_tokens;
 
-        match auto::autocompact(
+        // Same reasoning as the automatic pass: continue the live conversation
+        // so its history is served from the provider's prompt cache.
+        let prefix = CompactPrefix {
+            system: ctx.system_prompt.to_string(),
+            tools: ctx.context_tools.to_vec(),
+        };
+
+        match auto::autocompact_with_prefix(
             ctx.provider.as_ref(),
             ctx.messages,
             ctx.model,
             ctx.compact_config,
             ctx.compact_state,
+            Some(&prefix),
         )
         .await
         {
             Ok(result) => {
+                ctx.total_usage.accumulate(&result.usage);
                 let msgs_summarized = result.messages_summarized;
                 *ctx.messages = result.messages;
 

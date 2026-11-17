@@ -232,6 +232,19 @@ pub struct TokenUsage {
     pub cache_read_tokens: u64,
 }
 
+impl TokenUsage {
+    /// Fold another request's usage into this running total.
+    ///
+    /// Saturating rather than wrapping: a total that silently rolls over to a
+    /// small number would read as a cheap session instead of a broken counter.
+    pub fn accumulate(&mut self, other: &TokenUsage) {
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.cache_creation_tokens = self.cache_creation_tokens.saturating_add(other.cache_creation_tokens);
+        self.cache_read_tokens = self.cache_read_tokens.saturating_add(other.cache_read_tokens);
+    }
+}
+
 #[cfg(test)]
 #[path = "message_test.rs"]
 mod message_test;

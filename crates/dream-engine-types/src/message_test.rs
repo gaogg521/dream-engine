@@ -438,4 +438,37 @@ mod tests {
         let parsed: ImageInputCapability = serde_json::from_str("\"unknown\"").unwrap();
         assert_eq!(parsed, ImageInputCapability::Unknown);
     }
+
+    #[test]
+    fn token_usage_accumulate_sums_every_field() {
+        let mut total = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 10,
+            cache_creation_tokens: 5,
+            cache_read_tokens: 50,
+        };
+        total.accumulate(&TokenUsage {
+            input_tokens: 200,
+            output_tokens: 20,
+            cache_creation_tokens: 7,
+            cache_read_tokens: 150,
+        });
+        assert_eq!(total.input_tokens, 300);
+        assert_eq!(total.output_tokens, 30);
+        assert_eq!(total.cache_creation_tokens, 12);
+        assert_eq!(total.cache_read_tokens, 200);
+    }
+
+    #[test]
+    fn token_usage_accumulate_saturates_instead_of_wrapping() {
+        let mut total = TokenUsage {
+            input_tokens: u64::MAX - 1,
+            ..Default::default()
+        };
+        total.accumulate(&TokenUsage {
+            input_tokens: 10,
+            ..Default::default()
+        });
+        assert_eq!(total.input_tokens, u64::MAX);
+    }
 }
